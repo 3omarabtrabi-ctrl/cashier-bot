@@ -20,7 +20,7 @@ def check_cancel_command(message):
   return False
 
 
-# 1. إعداد قاعدة البيانات الشاملة
+# 1. إعداد قاعدة البيانات الشاملة (دون مسح البيانات القديمة)
 def init_db():
   conn = sqlite3.connect('syp_store.db', check_same_thread=False)
   cursor = conn.cursor()
@@ -61,6 +61,14 @@ def init_db():
             amount REAL,
             fee REAL,
             net_amount REAL,
+            date TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+    ''')
+  cursor.execute('''
+        CREATE TABLE IF NOT EXISTS recharges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            amount REAL,
             date TEXT DEFAULT (datetime('now', 'localtime'))
         )
     ''')
@@ -221,7 +229,6 @@ def save_new_user(message):
     return
   name = message.text.strip()
 
-  # التحقق من أن الاسم ينتهي بـ @om (سواء كابيتال أو سمول)
   if not name.lower().endswith('@om'):
     markup = types.InlineKeyboardMarkup()
     markup.add(
@@ -481,7 +488,7 @@ def process_expense_reason(message, amount):
   send_main_menu(message.chat.id)
 
 
-# --- 4. الأرباح ---
+# --- 4. الأرباح (مع إضافة خيار ربح يدوي يضيف للكاشير) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_profits')
 def show_profits_menu(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -512,6 +519,11 @@ def show_profits_menu(call):
   markup = types.InlineKeyboardMarkup()
   markup.add(
       types.InlineKeyboardButton(
+          '➕ إضافة ربح يدوي', callback_data='add_manual_profit'
+      )
+  )
+  markup.add(
+      types.InlineKeyboardButton(
           '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
       )
   )
@@ -523,6 +535,96 @@ def show_profits_menu(call):
       reply_markup=markup,
       parse_mode='Markdown',
   )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == 'add_manual_profit')
+def manual_profit_start(call):
+  bot.clear_step_handler_by_chat_id(call.message.chat.id)
+  markup = types.InlineKeyboardMarkup()
+  markup.add(
+      types.InlineKeyboardButton(
+          '🔙 رجوع للأرباح', callback_data='menu_profits'
+      )
+  )
+  msg = bot.send_message(
+      call.message.chat.id,
+      '💰 **إضافة ربح يدوي**\nأدخل مبلغ الربح (بالـ SYP):\n*(مثال: 25.000)*',
+      reply_markup=markup,
+      parse_mode='Markdown',
+  )
+  bot.register_next_step_handler(msg, process_manual_profit_amount)
+  try:
+    bot.delete_message(call.message.chat.id, call.message.message_id)
+  except Exception:
+    pass
+
+
+def process_manual_profit_amount(message):
+  if check_cancel_command(message):
+    return
+  try:
+    amount = float(message.text.replace('.', '').replace(',', ''))
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton(
+            '🔙 رجوع للأرباح', callback_data='menu_profits'
+        )
+    )
+    msg = bot.send_message(
+        message.chat.id,
+        f'💵 المبلغ المدخل: **{amount:,.0f} SYP**\n\n📝 الآن أدخل سبب أو وصف'
+        ' الربح اليدوي:',
+        reply_markup=markup,
+        parse_mode='Markdown',
+    )
+    bot.register_next_step_handler(msg, process_manual_profit_reason, amount)
+  except ValueError:
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton(
+            '🔙 رجوع للأرباح', callback_data='menu_profits'
+        )
+    )
+    msg = bot.send_message(
+        message.chat.id,
+        '⚠️ يرجى إدخال رقم صحيح للمبلغ. أعد المحاولة:',
+        reply_markup=markup,
+        parse_mode='Markdown',
+    )
+    bot.register_next_step_handler(msg, process_manual_profit_amount)
+
+
+def process_manual_profit_reason(message, amount):
+  if check_cancel_command(message):
+    return
+  reason = message.text.strip()
+  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  cursor = conn.cursor()
+
+  # تسجيل الربح وإضافته إلى رصيد الكاشير
+  cursor.execute(
+      'INSERT INTO profits (amount, reason) VALUES (?, ?)',
+      (amount, f'ربح يدوي: {reason}'),
+  )
+  cursor.execute(
+      'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+      (amount,),
+  )
+
+  conn.commit()
+  cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
+  new_cashier = cursor.fetchone()[0]
+  conn.close()
+
+  bot.send_message(
+      message.chat.id,
+      f'✅ **تمت إضافة الربح اليدوي وتحديث الكاشير بنجاح!**\n\n'
+      f'📌 السبب: **{reason}**\n'
+      f'💵 مبلغ الربح: **{amount:,.0f} SYP**\n'
+      f'💼 رصيد الكاشير الجديد: **{new_cashier:,.0f} SYP**',
+      parse_mode='Markdown',
+  )
+  send_main_menu(message.chat.id)
 
 
 # --- 5. عمليات السحب ---
@@ -756,6 +858,10 @@ def process_recharge_save(message, user_id):
     )
     cursor.execute(
         'UPDATE users SET balance = balance + ? WHERE id = ?', (amount, user_id)
+    )
+    cursor.execute(
+        'INSERT INTO recharges (user_id, amount) VALUES (?, ?)',
+        (user_id, amount),
     )
 
     cursor.execute('SELECT name, balance FROM users WHERE id = ?', (user_id,))
@@ -1033,13 +1139,13 @@ def process_repay_save(message, user_id):
     bot.register_next_step_handler(msg, process_repay_save, user_id)
 
 
-# --- 9. زر كشف حساب ---
+# --- 9. زر كشف حساب (بالصيغة الجديدة وشروط الديون) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_statement')
 def statement_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
   conn = sqlite3.connect('syp_store.db', check_same_thread=False)
   cursor = conn.cursor()
-  cursor.execute('SELECT id, name, balance, debt FROM users')
+  cursor.execute('SELECT id, name FROM users')
   users = cursor.fetchall()
   conn.close()
 
@@ -1085,8 +1191,23 @@ def show_user_statement(call):
   user_id = call.data.split('_')[1]
   conn = sqlite3.connect('syp_store.db', check_same_thread=False)
   cursor = conn.cursor()
-  cursor.execute('SELECT name, balance, debt FROM users WHERE id = ?', (user_id,))
+
+  # جلب اسم المستخدم والدين الحالي
+  cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
   user = cursor.fetchone()
+
+  # حساب إجمالي الشحن
+  cursor.execute(
+      'SELECT SUM(amount) FROM recharges WHERE user_id = ?', (user_id,)
+  )
+  total_recharge = cursor.fetchone()[0] or 0.0
+
+  # حساب إجمالي السحب بعد خصم الـ 10% (الصافي)
+  cursor.execute(
+      'SELECT SUM(net_amount) FROM withdrawals WHERE user_id = ?', (user_id,)
+  )
+  total_withdrawal = cursor.fetchone()[0] or 0.0
+
   conn.close()
 
   markup = types.InlineKeyboardMarkup()
@@ -1100,12 +1221,18 @@ def show_user_statement(call):
   )
 
   if user:
+    name, debt = user
     text = (
-        f'📊 **كشف حساب المستخدم:** `{user[0]}`\n'
+        f'📊 **كشف حساب المستخدم:** `{name}`\n'
         f'━━━━━━━━━━━━━━━\n'
-        f'💳 الرصيد الحالي: **{user[1]:,.0f} SYP**\n'
-        f'📝 إجمالي الديون: **{user[2]:,.0f} SYP**'
+        f'💳 شحن: **{total_recharge:,.0f} SYP**\n'
+        f'💸 سحب: **{total_withdrawal:,.0f} SYP**'
     )
+
+    # إظهار إجمالي الديون فقط إذا كانت أكبر من الصفر
+    if debt > 0:
+      text += f'\n📝 إجمالي الديون: **{debt:,.0f} SYP**'
+
     bot.edit_message_text(
         text,
         call.message.chat.id,
@@ -1118,5 +1245,8 @@ def show_user_statement(call):
     send_main_menu(call.message.chat.id)
 
 
-print('Bot is running with updated error message and clean /start handler...')
+print(
+    'Bot is running with updated statement, manual profits, and preserved'
+    ' data...'
+)
 bot.infinity_polling()
