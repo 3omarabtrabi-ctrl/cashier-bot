@@ -10,6 +10,16 @@ bot = telebot.TeleBot(TOKEN)
 authenticated_chats = set()
 
 
+# دالة عامة للتحقق إذا كتب المستخدم أمر إلغاء أو بداية أثناء أي خطوة
+def check_cancel_command(message):
+  if message.text and message.text.startswith('/'):
+    bot.clear_step_handler_by_chat_id(message.chat.id)
+    if message.text.split()[0] == '/start':
+      send_welcome(message)
+    return True
+  return False
+
+
 # 1. إعداد قاعدة البيانات الشاملة
 def init_db():
   conn = sqlite3.connect('syp_store.db', check_same_thread=False)
@@ -155,6 +165,8 @@ def send_welcome(message):
 
 
 def verify_password(message):
+  if check_cancel_command(message):
+    return
   chat_id = message.chat.id
   if message.text == '5555':
     authenticated_chats.add(chat_id)
@@ -205,6 +217,8 @@ def add_user_step(call):
 
 
 def save_new_user(message):
+  if check_cancel_command(message):
+    return
   name = message.text.strip()
   # التحقق من أن الاسم ينتهي بـ @om بغض النظر عن حالة الأحرف
   if not name.lower().endswith('@om'):
@@ -340,6 +354,8 @@ def cashier_recharge_start(call):
 
 
 def process_cashier_recharge(message):
+  if check_cancel_command(message):
+    return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
@@ -401,6 +417,8 @@ def expenses_start(call):
 
 
 def process_expense_amount(message):
+  if check_cancel_command(message):
+    return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
     markup = types.InlineKeyboardMarkup()
@@ -434,6 +452,8 @@ def process_expense_amount(message):
 
 
 def process_expense_reason(message, amount):
+  if check_cancel_command(message):
+    return
   reason = message.text.strip()
   conn = sqlite3.connect('syp_store.db', check_same_thread=False)
   cursor = conn.cursor()
@@ -576,6 +596,8 @@ def withdraw_amount_prompt(call):
 
 
 def process_withdrawal_calculation(message, user_id):
+  if check_cancel_command(message):
+    return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
     fee = amount * 0.10
@@ -719,6 +741,8 @@ def recharge_amount_prompt(call):
 
 
 def process_recharge_save(message, user_id):
+  if check_cancel_command(message):
+    return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
@@ -837,6 +861,8 @@ def debt_amount_prompt(call):
 
 
 def process_debt_save(message, user_id):
+  if check_cancel_command(message):
+    return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
@@ -957,6 +983,8 @@ def repay_amount_prompt(call):
 
 
 def process_repay_save(message, user_id):
+  if check_cancel_command(message):
+    return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
