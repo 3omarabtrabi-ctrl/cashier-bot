@@ -192,7 +192,8 @@ def add_user_step(call):
   )
   msg = bot.send_message(
       call.message.chat.id,
-      'أدخل اسم المستخدم الجديد (يجب أن ينتهي بـ `@Om` حصراً):\n*(مثال: Ali@Om)*',
+      'أدخل اسم المستخدم الجديد (يجب أن ينتهي بـ `@om` بأي تنسيق كابيتال أو'
+      ' سمول):\n*(مثال: Ali@om)*',
       reply_markup=markup,
       parse_mode='Markdown',
   )
@@ -205,7 +206,8 @@ def add_user_step(call):
 
 def save_new_user(message):
   name = message.text.strip()
-  if not name.endswith('@Om'):
+  # التحقق من أن الاسم ينتهي بـ @om بغض النظر عن حالة الأحرف
+  if not name.lower().endswith('@om'):
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton(
@@ -214,7 +216,8 @@ def save_new_user(message):
     )
     msg = bot.send_message(
         message.chat.id,
-        '⚠️ **خطأ:** يجب أن ينتهي اسم المستخدم بـ `@Om` تماماً.\nأعد إدخال الاسم الصحيح:',
+        '⚠️ **خطأ:** يجب أن ينتهي اسم المستخدم بـ `@om` (سواء كابيتال أو'
+        ' سمول).\nأعد إدخال الاسم الصحيح:',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -341,7 +344,6 @@ def process_cashier_recharge(message):
     amount = float(message.text.replace('.', '').replace(',', ''))
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
     cursor = conn.cursor()
-    # شحن الكاشير يزيد من رصيد الكاشير
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
         (amount,),
@@ -435,7 +437,6 @@ def process_expense_reason(message, amount):
   reason = message.text.strip()
   conn = sqlite3.connect('syp_store.db', check_same_thread=False)
   cursor = conn.cursor()
-  # المصاريف تنقص من رصيد الكاشير
   cursor.execute(
       'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
       (amount,),
@@ -503,7 +504,7 @@ def show_profits_menu(call):
   )
 
 
-# --- 5. عمليات السحب (تزيد رصيد الكاشير + عمولة 10% تضاف للأرباح وتزيد الكاشير) ---
+# --- 5. عمليات السحب (تزيد الكاشير + عمولة 10% للأرباح) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_withdraw')
 def withdraw_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -595,21 +596,18 @@ def process_withdrawal_calculation(message, user_id):
 
     name = user[0]
 
-    # حفظ عملية السحب
     cursor.execute(
         'INSERT INTO withdrawals (user_id, amount, fee, net_amount) VALUES (?,'
         ' ?, ?, ?)',
         (user_id, amount, fee, net_amount),
     )
 
-    # تسجيل عمولة السحب تلقائياً في جدول الأرباح
     profit_reason = f'عمولة سحب (10%) بمبلغ أساسي {amount:,.0f} SYP للمستخدم {name}'
     cursor.execute(
         'INSERT INTO profits (amount, reason) VALUES (?, ?)',
         (fee, profit_reason),
     )
 
-    # السحب يزيد من رصيد الكاشير (حسب طلبك: كبسة سحب بتزيد من رصيد الكاشير)
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
         (amount,),
@@ -649,7 +647,7 @@ def process_withdrawal_calculation(message, user_id):
     bot.register_next_step_handler(msg, process_withdrawal_calculation, user_id)
 
 
-# --- 6. زر الشحن (تنقص رصيد الكاشير وتزيد رصيد المستخدم) ---
+# --- 6. زر الشحن (تنقص الكاشير وتزيد المستخدم) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_recharge')
 def recharge_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -726,14 +724,11 @@ def process_recharge_save(message, user_id):
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
     cursor = conn.cursor()
 
-    # 1. خصم مبلغ الشحن من رصيد الكاشير (الشحن ينقص الكاشير)
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id ='
         ' 1',
         (amount,),
     )
-
-    # 2. إضافة المبلغ إلى رصيد المستخدم
     cursor.execute(
         'UPDATE users SET balance = balance + ? WHERE id = ?', (amount, user_id)
     )
@@ -774,7 +769,7 @@ def process_recharge_save(message, user_id):
     bot.register_next_step_handler(msg, process_recharge_save, user_id)
 
 
-# --- 7. زر الدين (تنقص رصيد الكاشير) ---
+# --- 7. زر الدين (تنقص الكاشير) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_debt')
 def debt_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -829,7 +824,8 @@ def debt_amount_prompt(call):
   markup.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_debt'))
   msg = bot.send_message(
       call.message.chat.id,
-      '💵 **أدخل مبلغ الدين** (بالـ SYP):\n*(ملاحظة: سيتم تنقيصه من رصيد الكاشير)*',
+      '💵 **أدخل مبلغ الدين** (بالـ SYP):\n*(ملاحظة: سيتم تنقيصه من رصيد'
+      ' الكاشير)*',
       reply_markup=markup,
       parse_mode='Markdown',
   )
@@ -846,11 +842,9 @@ def process_debt_save(message, user_id):
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
     cursor = conn.cursor()
 
-    # تسجيل الدين على المستخدم
     cursor.execute(
         'UPDATE users SET debt = debt + ? WHERE id = ?', (amount, user_id)
     )
-    # الدين ينقص رصيد الكاشير بناءً على طلبك
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
         (amount,),
@@ -890,7 +884,7 @@ def process_debt_save(message, user_id):
     bot.register_next_step_handler(msg, process_debt_save, user_id)
 
 
-# --- 8. زر تسديد الدين (تزيد رصيد الكاشير) ---
+# --- 8. زر تسديد الدين (تزيد الكاشير) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_repay_debt')
 def repay_debt_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -968,12 +962,10 @@ def process_repay_save(message, user_id):
     conn = sqlite3.connect('syp_store.db', check_same_thread=False)
     cursor = conn.cursor()
 
-    # تخفيض الدين عن المستخدم
     cursor.execute(
         'UPDATE users SET debt = MAX(0, debt - ?) WHERE id = ?',
         (amount, user_id),
     )
-    # تسديد الدين يزيد رصيد الكاشير بناءً على طلبك
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
         (amount,),
@@ -1099,4 +1091,3 @@ def show_user_statement(call):
 
 print('Bot is running with accurate cashier rules for all operations...')
 bot.infinity_polling()
-
