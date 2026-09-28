@@ -10,7 +10,7 @@ bot = telebot.TeleBot(TOKEN)
 authenticated_chats = set()
 
 
-# دالة عامة للتحقق إذا كتب المستخدم أمر إلغاء أو بداية أثناء أي خطوة
+# دالة عامة لإلغاء أي عملية حالية فور كتابة أي أمر يبدأ بـ / (مثل /start)
 def check_cancel_command(message):
   if message.text and message.text.startswith('/'):
     bot.clear_step_handler_by_chat_id(message.chat.id)
@@ -143,7 +143,7 @@ def send_main_menu(chat_id, message_id=None):
   bot.send_message(chat_id, text, reply_markup=markup, parse_mode='Markdown')
 
 
-# --- نظام الحماية بكلمة المرور ---
+# --- نظام الحماية بكلمة المرور وبداية التشغيل ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
   chat_id = message.chat.id
@@ -204,8 +204,8 @@ def add_user_step(call):
   )
   msg = bot.send_message(
       call.message.chat.id,
-      'أدخل اسم المستخدم الجديد (يجب أن ينتهي بـ `@om` بأي تنسيق كابيتال أو'
-      ' سمول):\n*(مثال: Ali@om)*',
+      'أدخل اسم المستخدم الجديد (يجب أن يحتوي على `@om` سواء كانت حروف كبيرة أو'
+      ' صغيرة):\n*(مثال: Ali@om)*',
       reply_markup=markup,
       parse_mode='Markdown',
   )
@@ -220,7 +220,8 @@ def save_new_user(message):
   if check_cancel_command(message):
     return
   name = message.text.strip()
-  # التحقق من أن الاسم ينتهي بـ @om بغض النظر عن حالة الأحرف
+
+  # التحقق من أن الاسم ينتهي بـ @om (سواء كابيتال أو سمول)
   if not name.lower().endswith('@om'):
     markup = types.InlineKeyboardMarkup()
     markup.add(
@@ -230,8 +231,8 @@ def save_new_user(message):
     )
     msg = bot.send_message(
         message.chat.id,
-        '⚠️ **خطأ:** يجب أن ينتهي اسم المستخدم بـ `@om` (سواء كابيتال أو'
-        ' سمول).\nأعد إدخال الاسم الصحيح:',
+        '⚠️ **خطأ:** يجب أن يحتوي اسم المستخدم على `@om` (سواء كانت حروف كبيرة'
+        ' أو صغيرة).\nأعد إدخال الاسم الصحيح:',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -329,7 +330,7 @@ def delete_user_confirm(call):
   send_main_menu(call.message.chat.id)
 
 
-# --- 2. شحن رصيد الكاشير (يزيد الكاشير) ---
+# --- 2. شحن رصيد الكاشير ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_cashier')
 def cashier_recharge_start(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -392,7 +393,7 @@ def process_cashier_recharge(message):
     bot.register_next_step_handler(msg, process_cashier_recharge)
 
 
-# --- 3. المصاريف (تنقص الكاشير) ---
+# --- 3. المصاريف ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_expenses')
 def expenses_start(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -480,7 +481,7 @@ def process_expense_reason(message, amount):
   send_main_menu(message.chat.id)
 
 
-# --- 4. الأرباح (تزيد الكاشير) ---
+# --- 4. الأرباح ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_profits')
 def show_profits_menu(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -524,7 +525,7 @@ def show_profits_menu(call):
   )
 
 
-# --- 5. عمليات السحب (تزيد الكاشير + عمولة 10% للأرباح) ---
+# --- 5. عمليات السحب ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_withdraw')
 def withdraw_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -669,7 +670,7 @@ def process_withdrawal_calculation(message, user_id):
     bot.register_next_step_handler(msg, process_withdrawal_calculation, user_id)
 
 
-# --- 6. زر الشحن (تنقص الكاشير وتزيد المستخدم) ---
+# --- 6. زر الشحن ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_recharge')
 def recharge_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -793,7 +794,7 @@ def process_recharge_save(message, user_id):
     bot.register_next_step_handler(msg, process_recharge_save, user_id)
 
 
-# --- 7. زر الدين (تنقص الكاشير) ---
+# --- 7. زر الدين ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_debt')
 def debt_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -910,7 +911,7 @@ def process_debt_save(message, user_id):
     bot.register_next_step_handler(msg, process_debt_save, user_id)
 
 
-# --- 8. زر تسديد الدين (تزيد الكاشير) ---
+# --- 8. زر تسديد الدين ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_repay_debt')
 def repay_debt_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1117,5 +1118,5 @@ def show_user_statement(call):
     send_main_menu(call.message.chat.id)
 
 
-print('Bot is running with accurate cashier rules for all operations...')
+print('Bot is running with updated error message and clean /start handler...')
 bot.infinity_polling()
