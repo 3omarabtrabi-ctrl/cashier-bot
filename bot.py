@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import telebot
 from telebot import types
@@ -8,6 +9,18 @@ bot = telebot.TeleBot(TOKEN)
 
 # تخزين الجلسات النشطة بعد إدخال كلمة المرور
 authenticated_chats = set()
+
+# --- إعداد مسار قاعدة البيانات لحفظ البيانات عند إعادة الانتشار (Redeployment) ---
+DATA_DIR = os.getenv('DATA_DIR', '.')
+if DATA_DIR != '.' and not os.path.exists(DATA_DIR):
+  os.makedirs(DATA_DIR, exist_ok=True)
+
+DB_PATH = os.path.join(DATA_DIR, 'syp_store.db')
+
+
+def get_db_connection():
+  """دالة مركزية لفتح الاتصال بقاعدة البيانات باستخدام المسار المعتمد."""
+  return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 # دالة عامة لإلغاء أي عملية حالية فور كتابة أي أمر يبدأ بـ / (مثل /start)
@@ -20,9 +33,9 @@ def check_cancel_command(message):
   return False
 
 
-# 1. إعداد قاعدة البيانات الشاملة (دون مسح البيانات القديمة)
+# 1. إعداد قاعدة البيانات الشاملة
 def init_db():
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -119,7 +132,7 @@ def get_main_markup():
 def send_main_menu(chat_id, message_id=None):
   bot.clear_step_handler_by_chat_id(chat_id)
 
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT COUNT(*) FROM users')
   user_count = cursor.fetchone()[0]
@@ -158,9 +171,7 @@ def send_welcome(message):
   bot.clear_step_handler_by_chat_id(chat_id)
   remove_markup = types.ReplyKeyboardRemove()
   if chat_id in authenticated_chats:
-    bot.send_message(
-        chat_id, 'أهلاً بك من جديد.', reply_markup=remove_markup
-    )
+    bot.send_message(chat_id, 'أهلاً بك من جديد.', reply_markup=remove_markup)
     send_main_menu(chat_id)
   else:
     msg = bot.send_message(
@@ -246,7 +257,7 @@ def save_new_user(message):
     bot.register_next_step_handler(msg, save_new_user)
     return
 
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   try:
     cursor.execute('INSERT INTO users (name) VALUES (?)', (name,))
@@ -271,7 +282,7 @@ def save_new_user(message):
 @bot.callback_query_handler(func=lambda call: call.data == 'user_del_list')
 def delete_user_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT id, name FROM users')
   users = cursor.fetchall()
@@ -317,7 +328,7 @@ def delete_user_list(call):
 )
 def delete_user_confirm(call):
   user_id = call.data.split('_')[1]
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT name FROM users WHERE id = ?', (user_id,))
   user = cursor.fetchone()
@@ -366,7 +377,7 @@ def process_cashier_recharge(message):
     return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
-    conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
@@ -463,7 +474,7 @@ def process_expense_reason(message, amount):
   if check_cancel_command(message):
     return
   reason = message.text.strip()
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute(
       'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
@@ -488,11 +499,11 @@ def process_expense_reason(message, amount):
   send_main_menu(message.chat.id)
 
 
-# --- 4. الأرباح (مع إضافة خيار ربح يدوي يضيف للكاشير) ---
+# --- 4. الأرباح ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_profits')
 def show_profits_menu(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT SUM(amount) FROM profits')
   total_profits = cursor.fetchone()[0] or 0.0
@@ -598,10 +609,9 @@ def process_manual_profit_reason(message, amount):
   if check_cancel_command(message):
     return
   reason = message.text.strip()
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
 
-  # تسجيل الربح وإضافته إلى رصيد الكاشير
   cursor.execute(
       'INSERT INTO profits (amount, reason) VALUES (?, ?)',
       (amount, f'ربح يدوي: {reason}'),
@@ -631,7 +641,7 @@ def process_manual_profit_reason(message, amount):
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_withdraw')
 def withdraw_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT id, name FROM users')
   users = cursor.fetchall()
@@ -706,7 +716,7 @@ def process_withdrawal_calculation(message, user_id):
     fee = amount * 0.10
     net_amount = amount - fee
 
-    conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT name FROM users WHERE id = ?', (user_id,))
     user = cursor.fetchone()
@@ -727,7 +737,9 @@ def process_withdrawal_calculation(message, user_id):
         (user_id, amount, fee, net_amount),
     )
 
-    profit_reason = f'عمولة سحب (10%) بمبلغ أساسي {amount:,.0f} SYP للمستخدم {name}'
+    profit_reason = (
+        f'عمولة سحب (10%) بمبلغ أساسي {amount:,.0f} SYP للمستخدم {name}'
+    )
     cursor.execute(
         'INSERT INTO profits (amount, reason) VALUES (?, ?)',
         (fee, profit_reason),
@@ -769,14 +781,16 @@ def process_withdrawal_calculation(message, user_id):
         reply_markup=markup,
         parse_mode='Markdown',
     )
-    bot.register_next_step_handler(msg, process_withdrawal_calculation, user_id)
+    bot.register_next_step_handler(
+        msg, process_withdrawal_calculation, user_id
+    )
 
 
 # --- 6. زر الشحن ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_recharge')
 def recharge_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT id, name FROM users')
   users = cursor.fetchall()
@@ -848,7 +862,7 @@ def process_recharge_save(message, user_id):
     return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
-    conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -904,7 +918,7 @@ def process_recharge_save(message, user_id):
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_debt')
 def debt_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT id, name FROM users')
   users = cursor.fetchall()
@@ -972,7 +986,7 @@ def process_debt_save(message, user_id):
     return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
-    conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute(
@@ -1021,7 +1035,7 @@ def process_debt_save(message, user_id):
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_repay_debt')
 def repay_debt_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT id, name, debt FROM users WHERE debt > 0')
   users = cursor.fetchall()
@@ -1068,82 +1082,215 @@ def repay_debt_users_list(call):
 @bot.callback_query_handler(
     func=lambda call: call.data.startswith('repayuser_')
 )
-def repay_amount_prompt(call):
+def repay_options_prompt(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
   user_id = call.data.split('_')[1]
-  markup = types.InlineKeyboardMarkup()
+
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
+  user = cursor.fetchone()
+  conn.close()
+
+  if not user:
+    bot.answer_callback_query(call.id, 'المستخدم غير موجود')
+    send_main_menu(call.message.chat.id)
+    return
+
+  name, debt = user
+
+  markup = types.InlineKeyboardMarkup(row_width=1)
   markup.add(
-      types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_repay_debt')
+      types.InlineKeyboardButton(
+          f'✅ تسديد كامل المبلغ ({debt:,.0f} SYP)',
+          callback_data=f'fullrepay_{user_id}',
+      ),
+      types.InlineKeyboardButton(
+          '🟡 تسديد جزئي', callback_data=f'partialrepay_{user_id}'
+      ),
+      types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_repay_debt'),
   )
-  msg = bot.send_message(
+
+  bot.edit_message_text(
+      f'💵 **تسديد الدين للمستخدم:** `{name}`\n'
+      f'📝 إجمالي الدين الحالي: **{debt:,.0f} SYP**\n\n'
+      f'اختر طريقة التسديد المطلوبة:',
       call.message.chat.id,
-      '💵 **أدخل مبلغ التسديد** (بالـ SYP):\n*(ملاحظة: سيتم إضافته إلى رصيد'
-      ' الكاشير)*',
+      call.message.message_id,
       reply_markup=markup,
       parse_mode='Markdown',
   )
-  bot.register_next_step_handler(msg, process_repay_save, user_id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('fullrepay_'))
+def process_full_repay(call):
+  bot.clear_step_handler_by_chat_id(call.message.chat.id)
+  user_id = call.data.split('_')[1]
+
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
+  user = cursor.fetchone()
+
+  if not user or user[1] <= 0:
+    conn.close()
+    bot.answer_callback_query(call.id, 'لا يوجد دين مستحق لهذا المستخدم.')
+    send_main_menu(call.message.chat.id)
+    return
+
+  name, debt = user
+
+  cursor.execute('UPDATE users SET debt = 0 WHERE id = ?', (user_id,))
+  cursor.execute(
+      'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+      (debt,),
+  )
+
+  conn.commit()
+  cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
+  new_cashier = cursor.fetchone()[0]
+  conn.close()
+
+  bot.answer_callback_query(call.id, 'تم تسديد كامل المبلغ بنجاح!')
+  bot.send_message(
+      call.message.chat.id,
+      f'✅ **تم تسديد كامل الدين بنجاح!**\n\n'
+      f'👤 المستخدم: **{name}**\n'
+      f'💵 المبلغ المسدد: **{debt:,.0f} SYP**\n'
+      f'📊 الدين المتبقي: **0 SYP**\n'
+      f'💼 رصيد الكاشير الجديد: **{new_cashier:,.0f} SYP**',
+      parse_mode='Markdown',
+  )
+  send_main_menu(call.message.chat.id)
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('partialrepay_')
+)
+def partial_repay_prompt(call):
+  bot.clear_step_handler_by_chat_id(call.message.chat.id)
+  user_id = call.data.split('_')[1]
+
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
+  user = cursor.fetchone()
+  conn.close()
+
+  if not user:
+    bot.answer_callback_query(call.id, 'المستخدم غير موجود')
+    send_main_menu(call.message.chat.id)
+    return
+
+  name, debt = user
+
+  markup = types.InlineKeyboardMarkup()
+  markup.add(
+      types.InlineKeyboardButton(
+          '🔙 رجوع', callback_data=f'repayuser_{user_id}'
+      )
+  )
+
+  msg = bot.send_message(
+      call.message.chat.id,
+      f'💵 **تسديد جزئي للمستخدم:** `{name}`\n'
+      f'📝 الدين الحالي: **{debt:,.0f} SYP**\n\n'
+      f'أدخل مبلغ التسديد الجزئي (بالـ SYP):',
+      reply_markup=markup,
+      parse_mode='Markdown',
+  )
+  bot.register_next_step_handler(msg, process_partial_repay_save, user_id)
   try:
     bot.delete_message(call.message.chat.id, call.message.message_id)
   except Exception:
     pass
 
 
-def process_repay_save(message, user_id):
+def process_partial_repay_save(message, user_id):
   if check_cancel_command(message):
     return
   try:
     amount = float(message.text.replace('.', '').replace(',', ''))
-    conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
+    cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
+    user = cursor.fetchone()
+    if not user:
+      conn.close()
+      bot.send_message(
+          message.chat.id, '⚠️ المستخدم غير موجود.', parse_mode='Markdown'
+      )
+      send_main_menu(message.chat.id)
+      return
+
+    name, current_debt = user
+
+    if amount > current_debt:
+      markup = types.InlineKeyboardMarkup()
+      markup.add(
+          types.InlineKeyboardButton(
+              '🔙 رجوع', callback_data=f'repayuser_{user_id}'
+          )
+      )
+      msg = bot.send_message(
+          message.chat.id,
+          f'⚠️ المبلغ المدخل ({amount:,.0f}) أكبر من الدين الحالي'
+          f' ({current_debt:,.0f})!\nأدخل مبلغاً صحيحاً:',
+          reply_markup=markup,
+          parse_mode='Markdown',
+      )
+      bot.register_next_step_handler(msg, process_partial_repay_save, user_id)
+      conn.close()
+      return
+
     cursor.execute(
-        'UPDATE users SET debt = MAX(0, debt - ?) WHERE id = ?',
-        (amount, user_id),
+        'UPDATE users SET debt = debt - ? WHERE id = ?', (amount, user_id)
     )
     cursor.execute(
         'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
         (amount,),
     )
 
-    cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
-    user = cursor.fetchone()
+    conn.commit()
+    cursor.execute('SELECT debt FROM users WHERE id = ?', (user_id,))
+    remaining_debt = cursor.fetchone()[0]
+
     cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
     new_cashier = cursor.fetchone()[0]
-
-    conn.commit()
     conn.close()
 
-    if user:
-      bot.send_message(
-          message.chat.id,
-          f'✅ **تم تسديد الدين بنجاح!**\n\n👤 المستخدم: **{user[0]}**\n💵 المبلغ'
-          f' المسدد: **{amount:,.0f} SYP**\n📊 الدين المتبقي: **{user[1]:,.0f}'
-          f' SYP**\n💼 رصيد الكاشير الجديد: **{new_cashier:,.0f} SYP**',
-          parse_mode='Markdown',
-      )
+    bot.send_message(
+        message.chat.id,
+        f'✅ **تم تسديد الجزء بنجاح!**\n\n'
+        f'👤 المستخدم: **{name}**\n'
+        f'💵 المبلغ المسدد: **{amount:,.0f} SYP**\n'
+        f'📊 الدين المتبقي: **{remaining_debt:,.0f} SYP**\n'
+        f'💼 رصيد الكاشير الجديد: **{new_cashier:,.0f} SYP**',
+        parse_mode='Markdown',
+    )
     send_main_menu(message.chat.id)
   except ValueError:
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton(
-            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            '🔙 رجوع', callback_data=f'repayuser_{user_id}'
         )
     )
     msg = bot.send_message(
         message.chat.id,
-        '⚠️ يرجى إدخال رقم صحيح للمبلغ.',
+        '⚠️ يرجى إدخال رقم صحيح للمبلغ. أعد المحاولة:',
         reply_markup=markup,
         parse_mode='Markdown',
     )
-    bot.register_next_step_handler(msg, process_repay_save, user_id)
+    bot.register_next_step_handler(msg, process_partial_repay_save, user_id)
 
 
-# --- 9. زر كشف حساب (بالصيغة الجديدة وشروط الديون) ---
+# --- 9. زر كشف حساب ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_statement')
 def statement_users_list(call):
   bot.clear_step_handler_by_chat_id(call.message.chat.id)
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
   cursor.execute('SELECT id, name FROM users')
   users = cursor.fetchall()
@@ -1189,20 +1336,17 @@ def statement_users_list(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('statuser_'))
 def show_user_statement(call):
   user_id = call.data.split('_')[1]
-  conn = sqlite3.connect('syp_store.db', check_same_thread=False)
+  conn = get_db_connection()
   cursor = conn.cursor()
 
-  # جلب اسم المستخدم والدين الحالي
   cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
   user = cursor.fetchone()
 
-  # حساب إجمالي الشحن
   cursor.execute(
       'SELECT SUM(amount) FROM recharges WHERE user_id = ?', (user_id,)
   )
   total_recharge = cursor.fetchone()[0] or 0.0
 
-  # حساب إجمالي السحب بعد خصم الـ 10% (الصافي)
   cursor.execute(
       'SELECT SUM(net_amount) FROM withdrawals WHERE user_id = ?', (user_id,)
   )
@@ -1229,7 +1373,6 @@ def show_user_statement(call):
         f'💸 سحب: **{total_withdrawal:,.0f} SYP**'
     )
 
-    # إظهار إجمالي الديون فقط إذا كانت أكبر من الصفر
     if debt > 0:
       text += f'\n📝 إجمالي الديون: **{debt:,.0f} SYP**'
 
@@ -1245,8 +1388,5 @@ def show_user_statement(call):
     send_main_menu(call.message.chat.id)
 
 
-print(
-    'Bot is running with updated statement, manual profits, and preserved'
-    ' data...'
-)
+print('Bot is running with persistent SQLite path configuration...')
 bot.infinity_polling()
