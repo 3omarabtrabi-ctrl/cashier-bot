@@ -107,6 +107,10 @@ def init_db():
             date TEXT DEFAULT (datetime('now', 'localtime'))
         )
     ''')
+    
+    # إضافة بند "نقاط الولاء" افتراضياً في القائمة إن لم يكن موجوداً
+    cursor.execute("INSERT OR IGNORE INTO custom_items (title, effect_type) VALUES ('نقاط الولاء', 'add')")
+
     cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
     if not cursor.fetchone():
         cursor.execute(
@@ -694,7 +698,7 @@ def process_withdrawal_calculation(message, user_id):
 
         if not user:
             bot.send_message(
-                message.chat.id, '⚠️ المستخدم غير موجود.', parse_mode='Markdown'
+                message.chat.id, '⚠️️ المستخدم غير موجود.', parse_mode='Markdown'
             )
             conn.close()
             send_main_menu(message.chat.id)
@@ -1430,7 +1434,7 @@ def save_custom_item_effect(call):
             parse_mode='Markdown',
         )
     except sqlite3.IntegrityError:
-        bot.send_message(chat_id, '⚠️ هذا البند موجود مسبقاً!', parse_mode='Markdown')
+        bot.send_message(chat_id, '⚠️️ هذا البند موجود مسبقاً!', parse_mode='Markdown')
     finally:
         conn.close()
         temp_custom_items.pop(chat_id, None)
