@@ -3,6 +3,7 @@ import sqlite3
 import telebot
 from telebot import types
 
+# ضع توكن البوت الخاص بك هنا
 TOKEN = '8798815717:AAFK2_Cm6xPhqhJD9Mgnm02b4tiMIM18Ikc'
 
 bot = telebot.TeleBot(TOKEN)
@@ -88,7 +89,7 @@ def init_db():
             date TEXT DEFAULT (datetime('now', 'localtime'))
         )
     ''')
-    # جدول البنود المخصصة الجديدة
+    # جدول البنود المخصصة (مثل نقاط الولاء، المكافآت، العمولات...)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS custom_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +142,6 @@ def get_main_markup():
         types.InlineKeyboardButton('📊 الأرباح', callback_data='menu_profits'),
         types.InlineKeyboardButton('📊 كشف حساب', callback_data='menu_statement'),
     )
-    # إضافة زر البنود المخصصة
     markup.add(
         types.InlineKeyboardButton('⚙️ البنود المخصصة', callback_data='menu_custom_items')
     )
@@ -263,7 +263,7 @@ def save_new_user(message):
         )
         msg = bot.send_message(
             message.chat.id,
-            '⚠️ خطأ: يجب أن يحتوي اسم المستخدم على @om (سواء كانت حروف كبيرة أو صغيرة).\nأعد إدخال الاسم الصحيح:',
+            '⚠️ خطأ: يجب أن ينتهي اسم المستخدم بـ @om (سواء كانت حروف كبيرة أو صغيرة).\nأعد إدخال الاسم الصحيح:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -1346,7 +1346,7 @@ def custom_items_menu(call):
     text = (
         '⚙️ **قسم البنود المخصصة**\n'
         '━━━━━━━━━━━━━━━\n'
-        'اختر بنداً مخصصاً لتسجيل عملية، أو قم بإنشاء بند جديد وتحديد تأكيده (زيادة أو خصم من الكاشير):'
+        'اختر بنداً مخصصاً لتسجيل عملية، أو قم بإنشاء بند جديد وتحديد تأثيره (زيادة أو خصم من الكاشير):'
     )
     bot.edit_message_text(
         text,
