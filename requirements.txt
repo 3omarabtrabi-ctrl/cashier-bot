@@ -2,7 +2,7 @@ pyTelegramBotAPI
 fpdf2
 arabic-reshaper
 python-bidi
-reportlab
+reportlab 
 
 
 
