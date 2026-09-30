@@ -2353,3 +2353,4 @@ def del_custom_item_confirm(call):
 
 print('Bot running with fixed recharge logic and daily PDF features...')
 bot.infinity_polling()
+# force redeploy
