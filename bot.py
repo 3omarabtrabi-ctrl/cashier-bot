@@ -46,9 +46,19 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
             balance REAL DEFAULT 0,
-            debt REAL DEFAULT 0
+            debt REAL DEFAULT 0,
+            loyalty_points INTEGER DEFAULT 0
         )
     ''')
+
+    # التأكد من وجود عمود نقاط الولاء في حال كانت قاعدة البيانات قديمة
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'loyalty_points' not in columns:
+        cursor.execute(
+            "ALTER TABLE users ADD COLUMN loyalty_points INTEGER DEFAULT 0"
+        )
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY,
@@ -86,10 +96,10 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             amount REAL,
+            points_earned INTEGER DEFAULT 0,
             date TEXT DEFAULT (datetime('now', 'localtime'))
         )
     ''')
-    # جدول البنود المخصصة (مثل نقاط الولاء، المكافآت، العمولات...)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS custom_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +107,6 @@ def init_db():
             effect_type TEXT
         )
     ''')
-    # جدول سجل عمليات البنود المخصصة
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS custom_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,9 +116,6 @@ def init_db():
             date TEXT DEFAULT (datetime('now', 'localtime'))
         )
     ''')
-    
-    # إضافة بند "نقاط الولاء" افتراضياً في القائمة إن لم يكن موجوداً
-    cursor.execute("INSERT OR IGNORE INTO custom_items (title, effect_type) VALUES ('نقاط الولاء', 'add')")
 
     cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
     if not cursor.fetchone():
@@ -128,7 +134,9 @@ def get_main_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton('➕ إضافة مستخدم', callback_data='user_add'),
-        types.InlineKeyboardButton('❌ حذف مستخدم', callback_data='user_del_list'),
+        types.InlineKeyboardButton(
+            '❌ حذف مستخدم', callback_data='user_del_list'
+        ),
     )
     markup.add(
         types.InlineKeyboardButton('💳 شحن', callback_data='menu_recharge'),
@@ -136,18 +144,29 @@ def get_main_markup():
     )
     markup.add(
         types.InlineKeyboardButton('📝 دين', callback_data='menu_debt'),
-        types.InlineKeyboardButton('💵 تسديد الدين', callback_data='menu_repay_debt'),
+        types.InlineKeyboardButton(
+            '💵 تسديد الدين', callback_data='menu_repay_debt'
+        ),
     )
     markup.add(
-        types.InlineKeyboardButton('💰 شحن الكاشير', callback_data='menu_cashier'),
+        types.InlineKeyboardButton(
+            '💰 شحن الكاشير', callback_data='menu_cashier'
+        ),
         types.InlineKeyboardButton('💸 المصاريف', callback_data='menu_expenses'),
     )
     markup.add(
         types.InlineKeyboardButton('📊 الأرباح', callback_data='menu_profits'),
-        types.InlineKeyboardButton('📊 كشف حساب', callback_data='menu_statement'),
+        types.InlineKeyboardButton(
+            '📊 كشف حساب', callback_data='menu_statement'
+        ),
     )
     markup.add(
-        types.InlineKeyboardButton('⚙️ البنود المخصصة', callback_data='menu_custom_items')
+        types.InlineKeyboardButton(
+            '⚙️ البنود المخصصة', callback_data='menu_custom_items'
+        ),
+        types.InlineKeyboardButton(
+            '🎁 نقاط الولاء', callback_data='menu_loyalty'
+        ),
     )
     return markup
 
@@ -194,7 +213,9 @@ def send_welcome(message):
     bot.clear_step_handler_by_chat_id(chat_id)
     remove_markup = types.ReplyKeyboardRemove()
     if chat_id in authenticated_chats:
-        bot.send_message(chat_id, 'أهلاً بك من جديد.', reply_markup=remove_markup)
+        bot.send_message(
+            chat_id, 'أهلاً بك من جديد.', reply_markup=remove_markup
+        )
         send_main_menu(chat_id)
     else:
         msg = bot.send_message(
@@ -240,11 +261,14 @@ def add_user_step(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
     msg = bot.send_message(
         call.message.chat.id,
-        'أدخل اسم المستخدم الجديد (يجب أن يحتوي على @om سواء كانت حروف كبيرة أو صغيرة):\n*(مثال: Ali@om)*',
+        'أدخل اسم المستخدم الجديد (يجب أن يحتوي على @om سواء كانت حروف كبيرة'
+        ' أو صغيرة):\n*(مثال: Ali@om)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -263,11 +287,14 @@ def save_new_user(message):
     if not name.lower().endswith('@om'):
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
-            '⚠️ خطأ: يجب أن ينتهي اسم المستخدم بـ @om (سواء كانت حروف كبيرة أو صغيرة).\nأعد إدخال الاسم الصحيح:',
+            '⚠️ خطأ: يجب أن ينتهي اسم المستخدم بـ @om (سواء كانت حروف كبيرة أو'
+            ' صغيرة).\nأعد إدخال الاسم الصحيح:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -288,7 +315,7 @@ def save_new_user(message):
     except sqlite3.IntegrityError:
         bot.send_message(
             message.chat.id,
-            '⚠️ هذا المستخدم موجود مسبقاً!',
+            '⚠ هذا المستخدم موجود مسبقاً!',
             parse_mode='Markdown',
         )
         send_main_menu(message.chat.id)
@@ -308,10 +335,12 @@ def delete_user_list(call):
     markup = types.InlineKeyboardMarkup()
     if not users:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         bot.edit_message_text(
-            '⚠️ لا يوجد أي مستخدمين مسجلين للحذف.',
+            '⚠ لا يوجد أي مستخدمين مسجلين للحذف.',
             call.message.chat.id,
             call.message.message_id,
             reply_markup=markup,
@@ -321,10 +350,14 @@ def delete_user_list(call):
 
     for user in users:
         markup.add(
-            types.InlineKeyboardButton(f'❌ {user[1]}', callback_data=f'deluser_{user[0]}')
+            types.InlineKeyboardButton(
+                f'❌ {user[1]}', callback_data=f'deluser_{user[0]}'
+            )
         )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
     bot.edit_message_text(
         'اختر المستخدم المراد حذفه نهائياً:',
@@ -363,11 +396,14 @@ def cashier_recharge_start(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💰 شحن رصيد الكاشير\nأدخل المبلغ المراد إضافته إلى رصيد الكاشير:\n*(مثال: 500.000)*',
+        '💰 شحن رصيد الكاشير\nأدخل المبلغ المراد إضافته إلى رصيد'
+        ' الكاشير:\n*(مثال: 500.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -386,7 +422,8 @@ def process_cashier_recharge(message):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE'
+            ' id = 1',
             (amount,),
         )
         conn.commit()
@@ -396,14 +433,17 @@ def process_cashier_recharge(message):
 
         bot.send_message(
             message.chat.id,
-            f'✅ تم شحن الكاشير بنجاح!\nمبلغ الإضافة: {amount:,.0f} SYP\n💼 الرصيد الحالي: {new_cashier:,.0f} SYP',
+            f'✅ تم شحن الكاشير بنجاح!\nمبلغ الإضافة: {amount:,.0f} SYP\n💼'
+            f' الرصيد الحالي: {new_cashier:,.0f} SYP',
             parse_mode='Markdown',
         )
         send_main_menu(message.chat.id)
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -420,11 +460,14 @@ def expenses_start(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💸 تسجيل مصروف جديد\nأدخل المبلغ المراد خصمه من الكاشير (بالـ SYP):\n*(مثال: 50.000)*',
+        '💸 تسجيل مصروف جديد\nأدخل المبلغ المراد خصمه من الكاشير (بالـ'
+        ' SYP):\n*(مثال: 50.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -442,11 +485,14 @@ def process_expense_amount(message):
         amount = float(message.text.replace('.', '').replace(',', ''))
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
-            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف المصروف (مثال: بونص، أجور...):',
+            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف'
+            ' المصروف (مثال: بونص، أجور...):',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -454,7 +500,9 @@ def process_expense_amount(message):
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -524,10 +572,14 @@ def show_profits_menu(call):
 
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('➕ إضافة ربح يدوي', callback_data='add_manual_profit')
+        types.InlineKeyboardButton(
+            '➕ إضافة ربح يدوي', callback_data='add_manual_profit'
+        )
     )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     bot.edit_message_text(
@@ -544,7 +596,9 @@ def manual_profit_start(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للأرباح', callback_data='menu_profits')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للأرباح', callback_data='menu_profits'
+        )
     )
     msg = bot.send_message(
         call.message.chat.id,
@@ -566,19 +620,26 @@ def process_manual_profit_amount(message):
         amount = float(message.text.replace('.', '').replace(',', ''))
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للأرباح', callback_data='menu_profits')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للأرباح', callback_data='menu_profits'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
-            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف الربح اليدوي:',
+            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف'
+            ' الربح اليدوي:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
-        bot.register_next_step_handler(msg, process_manual_profit_reason, amount)
+        bot.register_next_step_handler(
+            msg, process_manual_profit_reason, amount
+        )
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للأرباح', callback_data='menu_profits')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للأرباح', callback_data='menu_profits'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -601,7 +662,8 @@ def process_manual_profit_reason(message, amount):
         (amount, f'ربح يدوي: {reason}'),
     )
     cursor.execute(
-        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id ='
+        ' 1',
         (amount,),
     )
 
@@ -634,7 +696,9 @@ def withdraw_users_list(call):
     markup = types.InlineKeyboardMarkup()
     if not users:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         bot.edit_message_text(
             '⚠️ لا يوجد مستخدمين مسجلين لإجراء سحب لهم.',
@@ -647,10 +711,14 @@ def withdraw_users_list(call):
 
     for user in users:
         markup.add(
-            types.InlineKeyboardButton(f'👤 {user[1]}', callback_data=f'withdrawuser_{user[0]}')
+            types.InlineKeyboardButton(
+                f'👤 {user[1]}', callback_data=f'withdrawuser_{user[0]}'
+            )
         )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     bot.edit_message_text(
@@ -662,7 +730,9 @@ def withdraw_users_list(call):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('withdrawuser_'))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('withdrawuser_')
+)
 def withdraw_amount_prompt(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     user_id = call.data.split('_')[1]
@@ -672,11 +742,14 @@ def withdraw_amount_prompt(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💵 أدخل مبلغ السحب الأساسي (بالـ SYP):\n*(ملاحظة: سيتم خصم عمولة 10% تلقائياً وتضاف للأرباح)\n(مثال: 100.000)*',
+        '💵 أدخل مبلغ السحب الأساسي (بالـ SYP):\n*(ملاحظة: سيتم خصم عمولة 10%'
+        ' تلقائياً وتضاف للأرباح)\n(مثال: 100.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
-    bot.register_next_step_handler(msg, process_withdrawal_calculation, user_id)
+    bot.register_next_step_handler(
+        msg, process_withdrawal_calculation, user_id
+    )
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except Exception:
@@ -698,7 +771,7 @@ def process_withdrawal_calculation(message, user_id):
 
         if not user:
             bot.send_message(
-                message.chat.id, '⚠️️ المستخدم غير موجود.', parse_mode='Markdown'
+                message.chat.id, '⚠ المستخدم غير موجود.', parse_mode='Markdown'
             )
             conn.close()
             send_main_menu(message.chat.id)
@@ -707,18 +780,22 @@ def process_withdrawal_calculation(message, user_id):
         name = user[0]
 
         cursor.execute(
-            'INSERT INTO withdrawals (user_id, amount, fee, net_amount) VALUES (?, ?, ?, ?)',
+            'INSERT INTO withdrawals (user_id, amount, fee, net_amount)'
+            ' VALUES (?, ?, ?, ?)',
             (user_id, amount, fee, net_amount),
         )
 
-        profit_reason = f'عمولة سحب (10%) بمبلغ أساسي {amount:,.0f} SYP للمستخدم {name}'
+        profit_reason = (
+            f'عمولة سحب (10%) بمبلغ أساسي {amount:,.0f} SYP للمستخدم {name}'
+        )
         cursor.execute(
             'INSERT INTO profits (amount, reason) VALUES (?, ?)',
             (fee, profit_reason),
         )
 
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id'
+            ' = 1',
             (amount,),
         )
 
@@ -743,7 +820,9 @@ def process_withdrawal_calculation(message, user_id):
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -751,10 +830,12 @@ def process_withdrawal_calculation(message, user_id):
             reply_markup=markup,
             parse_mode='Markdown',
         )
-        bot.register_next_step_handler(msg, process_withdrawal_calculation, user_id)
+        bot.register_next_step_handler(
+            msg, process_withdrawal_calculation, user_id
+        )
 
 
-# --- 6. زر الشحن ---
+# --- 6. زر الشحن وحساب نقاط الولاء ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_recharge')
 def recharge_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -767,7 +848,9 @@ def recharge_users_list(call):
     markup = types.InlineKeyboardMarkup()
     if not users:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         bot.edit_message_text(
             '⚠️ لا يوجد مستخدمين مسجلين للشحن لهم.',
@@ -780,10 +863,14 @@ def recharge_users_list(call):
 
     for user in users:
         markup.add(
-            types.InlineKeyboardButton(f'💳 {user[1]}', callback_data=f'rechargeuser_{user[0]}')
+            types.InlineKeyboardButton(
+                f'💳 {user[1]}', callback_data=f'rechargeuser_{user[0]}'
+            )
         )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     bot.edit_message_text(
@@ -795,7 +882,9 @@ def recharge_users_list(call):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('rechargeuser_'))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('rechargeuser_')
+)
 def recharge_amount_prompt(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     user_id = call.data.split('_')[1]
@@ -805,7 +894,8 @@ def recharge_amount_prompt(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💵 أدخل مبلغ الشحن (بالـ SYP):\n*(ملاحظة: سيتم خصم المبلغ من رصيد الكاشير تلقائياً)\n(مثال: 50.000)*',
+        '💵 أدخل مبلغ الشحن (بالـ SYP):\n*(كل 1,000 SYP تعطي نقطة ولاء واحدة'
+        ' تلقائياً)*\n*(مثال: 50.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -821,22 +911,32 @@ def process_recharge_save(message, user_id):
         return
     try:
         amount = float(message.text.replace('.', '').replace(',', ''))
+
+        # حساب نقاط الولاء المستحقة (نقطة لكل 1000 SYP)
+        earned_points = int(amount // 1000)
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE'
+            ' id = 1',
             (amount,),
         )
         cursor.execute(
-            'UPDATE users SET balance = balance + ? WHERE id = ?', (amount, user_id)
+            'UPDATE users SET balance = balance + ?, loyalty_points ='
+            ' loyalty_points + ? WHERE id = ?',
+            (amount, earned_points, user_id),
         )
         cursor.execute(
-            'INSERT INTO recharges (user_id, amount) VALUES (?, ?)',
-            (user_id, amount),
+            'INSERT INTO recharges (user_id, amount, points_earned) VALUES (?,',
+            (user_id, amount, earned_points),
         )
 
-        cursor.execute('SELECT name, balance FROM users WHERE id = ?', (user_id,))
+        cursor.execute(
+            'SELECT name, balance, loyalty_points FROM users WHERE id = ?',
+            (user_id,),
+        )
         user = cursor.fetchone()
 
         cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
@@ -846,12 +946,15 @@ def process_recharge_save(message, user_id):
         conn.close()
 
         if user:
+            name, balance, total_points = user
             bot.send_message(
                 message.chat.id,
                 f'✅ تم شحن رصيد المستخدم بنجاح!\n\n'
-                f'👤 المستخدم: {user[0]}\n'
+                f'👤 المستخدم: {name}\n'
+                f'⭐ نقاط الولاء: {total_points} نقطة (+{earned_points})\n'
+                f'━━━━━━━━━━━━━━━\n'
                 f'💵 المبلغ المضاف: {amount:,.0f} SYP\n'
-                f'💼 رصيد المستخدم الجديد: {user[1]:,.0f} SYP\n'
+                f'💼 رصيد المستخدم الجديد: {balance:,.0f} SYP\n'
                 f'📉 رصيد الكاشير المتبقي: {new_cashier:,.0f} SYP',
                 parse_mode='Markdown',
             )
@@ -859,7 +962,9 @@ def process_recharge_save(message, user_id):
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -870,7 +975,212 @@ def process_recharge_save(message, user_id):
         bot.register_next_step_handler(msg, process_recharge_save, user_id)
 
 
-# --- 7. زر الدين ---
+# --- 7. قسم نقاط الولاء والاستبدال ---
+@bot.callback_query_handler(func=lambda call: call.data == 'menu_loyalty')
+def loyalty_menu(call):
+    bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(
+            '🔄 استبدال نقاط الولاء', callback_data='loyalty_redeem_list'
+        ),
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        ),
+    )
+
+    text = (
+        '🎁 **قسم نقاط الولاء**\n'
+        '━━━━━━━━━━━━━━━\n'
+        'يمكنك هنا استبدال نقاط الولاء المجمعة لدى المستخدمين برصيد مباشر داخل البوت.\n\n'
+        'اضغط على زر الاستبدال للبدء:'
+    )
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup,
+        parse_mode='Markdown',
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data == 'loyalty_redeem_list'
+)
+def loyalty_redeem_users_list(call):
+    bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, name, loyalty_points FROM users')
+    users = cursor.fetchall()
+    conn.close()
+
+    markup = types.InlineKeyboardMarkup()
+    if not users:
+        markup.add(
+            types.InlineKeyboardButton(
+                '🔙 رجوع', callback_data='menu_loyalty'
+            )
+        )
+        bot.edit_message_text(
+            '⚠️ لا يوجد مستخدمين مسجلين للاستبدال.',
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=markup,
+            parse_mode='Markdown',
+        )
+        return
+
+    for user in users:
+        pts = user[2] or 0
+        markup.add(
+            types.InlineKeyboardButton(
+                f'👤 {user[1]} ({pts} نقطة)',
+                callback_data=f'redeemuser_{user[0]}',
+            )
+        )
+
+    markup.add(
+        types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_loyalty')
+    )
+    bot.edit_message_text(
+        '🔄 **اختر المستخدم لاستبدال نقاطه:**',
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup,
+        parse_mode='Markdown',
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('redeemuser_')
+)
+def loyalty_redeem_tiers_prompt(call):
+    bot.clear_step_handler_by_chat_id(call.message.chat.id)
+    user_id = call.data.split('_')[1]
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT name, loyalty_points, balance FROM users WHERE id = ?',
+        (user_id,),
+    )
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        bot.answer_callback_query(call.id, 'المستخدم غير موجود.')
+        send_main_menu(call.message.chat.id)
+        return
+
+    name, points, balance = user
+    points = points or 0
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(
+            '🎁 200 نقطة ⬅️ 10,000 SYP',
+            callback_data=f'dotier_{user_id}_200_10000',
+        ),
+        types.InlineKeyboardButton(
+            '🎁 300 نقطة ⬅️ 18,000 SYP',
+            callback_data=f'dotier_{user_id}_300_18000',
+        ),
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة', callback_data='loyalty_redeem_list'
+        ),
+    )
+
+    text = (
+        f'🔄 **استبدال نقاط الولاء للمستخدم:** `{name}`\n'
+        f'⭐ **النقاط الحالية:** {points} نقطة\n'
+        f'💼 **الرصيد الحالي:** {balance:,.0f} SYP\n'
+        f'━━━━━━━━━━━━━━━\n'
+        f'اختر فئة الاستبدال المطلوبة:'
+    )
+
+    bot.edit_message_text(
+        text,
+        call.message.chat.id,
+        call.message.message_id,
+        reply_markup=markup,
+        parse_mode='Markdown',
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dotier_'))
+def process_loyalty_redemption(call):
+    parts = call.data.split('_')
+    user_id = parts[1]
+    required_points = int(parts[2])
+    reward_amount = float(parts[3])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT name, loyalty_points, balance FROM users WHERE id = ?',
+        (user_id,),
+    )
+    user = cursor.fetchone()
+
+    if not user:
+        conn.close()
+        bot.answer_callback_query(call.id, 'المستخدم غير موجود.')
+        return
+
+    name, current_points, current_balance = user
+    current_points = current_points or 0
+
+    if current_points < required_points:
+        conn.close()
+        bot.answer_callback_query(
+            call.id,
+            f'⚠️ رصيد النقاط غير كافٍ! (المتوفر: {current_points} نقطة)',
+            show_alert=True,
+        )
+        return
+
+    # 1. خصم النقاط وإضافة المبلغ لرصيد المستخدم
+    new_points = current_points - required_points
+    new_balance = current_balance + reward_amount
+
+    cursor.execute(
+        'UPDATE users SET loyalty_points = ?, balance = ? WHERE id = ?',
+        (new_points, new_balance, user_id),
+    )
+
+    # 2. خصم مبلغ الاستبدال من رصيد الكاشير
+    cursor.execute(
+        'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id ='
+        ' 1',
+        (reward_amount,),
+    )
+
+    conn.commit()
+
+    # الحصول على رصيد الكاشير المتبقي
+    cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
+    new_cashier = cursor.fetchone()[0]
+
+    conn.close()
+
+    bot.answer_callback_query(call.id, '✅ تم استبدال النقاط بنجاح!')
+    bot.send_message(
+        call.message.chat.id,
+        f'✅ **تمت عملية استبدال النقاط بنجاح!**\n\n'
+        f'👤 **المستخدم:** {name}\n'
+        f'📉 **النقاط المخصومة:** {required_points} نقطة\n'
+        f'⭐ **النقاط المتبقية:** {new_points} نقطة\n'
+        f'━━━━━━━━━━━━━━━\n'
+        f'🎁 **المكافأة المضافة للمستخدم:** +{reward_amount:,.0f} SYP\n'
+        f'💼 **رصيد المستخدم الجديد:** {new_balance:,.0f} SYP\n'
+        f'📉 **رصيد الكاشير المتبقي:** {new_cashier:,.0f} SYP',
+        parse_mode='Markdown',
+    )
+    send_main_menu(call.message.chat.id)
+
+
+# --- 8. زر الدين ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_debt')
 def debt_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -883,7 +1193,9 @@ def debt_users_list(call):
     markup = types.InlineKeyboardMarkup()
     if not users:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         bot.edit_message_text(
             '⚠️ لا يوجد مستخدمين مسجلين.',
@@ -896,10 +1208,14 @@ def debt_users_list(call):
 
     for user in users:
         markup.add(
-            types.InlineKeyboardButton(f'📝 {user[1]}', callback_data=f'debtuser_{user[0]}')
+            types.InlineKeyboardButton(
+                f'📝 {user[1]}', callback_data=f'debtuser_{user[0]}'
+            )
         )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     bot.edit_message_text(
@@ -919,7 +1235,8 @@ def debt_amount_prompt(call):
     markup.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_debt'))
     msg = bot.send_message(
         call.message.chat.id,
-        '💵 أدخل مبلغ الدين (بالـ SYP):\n*(ملاحظة: سيتم تنقيصه من رصيد الكاشير)*',
+        '💵 أدخل مبلغ الدين (بالـ SYP):\n*(ملاحظة: سيتم تنقيصه من رصيد'
+        ' الكاشير)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -942,7 +1259,8 @@ def process_debt_save(message, user_id):
             'UPDATE users SET debt = debt + ? WHERE id = ?', (amount, user_id)
         )
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE'
+            ' id = 1',
             (amount,),
         )
 
@@ -957,14 +1275,19 @@ def process_debt_save(message, user_id):
         if user:
             bot.send_message(
                 message.chat.id,
-                f'✅ تم تسجيل الدين بنجاح!\n\n👤 المستخدم: {user[0]}\n💵 مبلغ الدين: {amount:,.0f} SYP\n📊 إجمالي الدين الجديد: {user[1]:,.0f} SYP\n💼 رصيد الكاشير الجديد: {new_cashier:,.0f} SYP',
+                f'✅ تم تسجيل الدين بنجاح!\n\n👤 المستخدم: {user[0]}\n💵 مبلغ'
+                f' الدين: {amount:,.0f} SYP\n📊 إجمالي الدين الجديد:'
+                f' {user[1]:,.0f} SYP\n💼 رصيد الكاشير الجديد:'
+                f' {new_cashier:,.0f} SYP',
                 parse_mode='Markdown',
             )
         send_main_menu(message.chat.id)
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -975,7 +1298,7 @@ def process_debt_save(message, user_id):
         bot.register_next_step_handler(msg, process_debt_save, user_id)
 
 
-# --- 8. زر تسديد الدين ---
+# --- 9. زر تسديد الدين ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_repay_debt')
 def repay_debt_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -988,7 +1311,9 @@ def repay_debt_users_list(call):
     markup = types.InlineKeyboardMarkup()
     if not users:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         bot.edit_message_text(
             '⚠️ لا يوجد أي ديون مستحقة على المستخدمين حالياً.',
@@ -1007,7 +1332,9 @@ def repay_debt_users_list(call):
             )
         )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     bot.edit_message_text(
@@ -1019,7 +1346,9 @@ def repay_debt_users_list(call):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('repayuser_'))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('repayuser_')
+)
 def repay_options_prompt(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     user_id = call.data.split('_')[1]
@@ -1060,7 +1389,9 @@ def repay_options_prompt(call):
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('fullrepay_'))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('fullrepay_')
+)
 def process_full_repay(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     user_id = call.data.split('_')[1]
@@ -1080,7 +1411,8 @@ def process_full_repay(call):
 
     cursor.execute('UPDATE users SET debt = 0 WHERE id = ?', (user_id,))
     cursor.execute(
-        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id ='
+        ' 1',
         (debt,),
     )
 
@@ -1102,7 +1434,9 @@ def process_full_repay(call):
     send_main_menu(call.message.chat.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('partialrepay_'))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('partialrepay_')
+)
 def partial_repay_prompt(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     user_id = call.data.split('_')[1]
@@ -1171,11 +1505,14 @@ def process_partial_repay_save(message, user_id):
             )
             msg = bot.send_message(
                 message.chat.id,
-                f'⚠️ المبلغ المدخل ({amount:,.0f}) أكبر من الدين الحالي ({current_debt:,.0f})!\nأدخل مبلغاً صحيحاً:',
+                f'⚠️ المبلغ المدخل ({amount:,.0f}) أكبر من الدين الحالي'
+                f' ({current_debt:,.0f})!\nأدخل مبلغاً صحيحاً:',
                 reply_markup=markup,
                 parse_mode='Markdown',
             )
-            bot.register_next_step_handler(msg, process_partial_repay_save, user_id)
+            bot.register_next_step_handler(
+                msg, process_partial_repay_save, user_id
+            )
             conn.close()
             return
 
@@ -1183,7 +1520,8 @@ def process_partial_repay_save(message, user_id):
             'UPDATE users SET debt = debt - ? WHERE id = ?', (amount, user_id)
         )
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE'
+            ' id = 1',
             (amount,),
         )
 
@@ -1218,10 +1556,12 @@ def process_partial_repay_save(message, user_id):
             reply_markup=markup,
             parse_mode='Markdown',
         )
-        bot.register_next_step_handler(msg, process_partial_repay_save, user_id)
+        bot.register_next_step_handler(
+            msg, process_partial_repay_save, user_id
+        )
 
 
-# --- 9. زر كشف حساب ---
+# --- 10. زر كشف حساب مع إظهار نقاط الولاء ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_statement')
 def statement_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1234,7 +1574,9 @@ def statement_users_list(call):
     markup = types.InlineKeyboardMarkup()
     if not users:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+            )
         )
         bot.edit_message_text(
             '⚠️ لا يوجد مستخدمين مسجلين.',
@@ -1252,7 +1594,9 @@ def statement_users_list(call):
             )
         )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     bot.edit_message_text(
@@ -1270,7 +1614,9 @@ def show_user_statement(call):
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    cursor.execute('SELECT name, debt FROM users WHERE id = ?', (user_id,))
+    cursor.execute(
+        'SELECT name, debt, loyalty_points FROM users WHERE id = ?', (user_id,)
+    )
     user = cursor.fetchone()
 
     cursor.execute(
@@ -1296,9 +1642,10 @@ def show_user_statement(call):
     )
 
     if user:
-        name, debt = user
+        name, debt, loyalty_points = user
         text = (
             f'📊 كشف حساب المستخدم: {name}\n'
+            f'⭐ نقاط الولاء: {loyalty_points or 0} نقطة\n'
             f'━━━━━━━━━━━━━━━\n'
             f'💳 شحن: {total_recharge:,.0f} SYP\n'
             f'💸 سحب: {total_withdrawal:,.0f} SYP'
@@ -1319,7 +1666,7 @@ def show_user_statement(call):
         send_main_menu(call.message.chat.id)
 
 
-# --- 10. قسم البنود المخصصة (إضافة / تنفيذ / حذف) ---
+# --- 11. قسم البنود المخصصة ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_custom_items')
 def custom_items_menu(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1340,17 +1687,24 @@ def custom_items_menu(call):
             )
 
     markup.add(
-        types.InlineKeyboardButton('➕ إضافة بند جديد', callback_data='add_custom_item'),
-        types.InlineKeyboardButton('❌ حذف بند مخصص', callback_data='del_custom_item_list'),
+        types.InlineKeyboardButton(
+            '➕ إضافة بند جديد', callback_data='add_custom_item'
+        ),
+        types.InlineKeyboardButton(
+            '❌ حذف بند مخصص', callback_data='del_custom_item_list'
+        ),
     )
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للقائمة الرئيسية', callback_data='back_to_main'
+        )
     )
 
     text = (
         '⚙️ **قسم البنود المخصصة**\n'
         '━━━━━━━━━━━━━━━\n'
-        'اختر بنداً مخصصاً لتسجيل عملية، أو قم بإنشاء بند جديد وتحديد تأثيره (زيادة أو خصم من الكاشير):'
+        'اختر بنداً مخصصاً لتسجيل عملية، أو قم بإنشاء بند جديد وتحديد تأثيره'
+        ' (زيادة أو خصم من الكاشير):'
     )
     bot.edit_message_text(
         text,
@@ -1366,11 +1720,14 @@ def add_custom_item_start(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للبنود المخصصة', callback_data='menu_custom_items')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للبنود المخصصة', callback_data='menu_custom_items'
+        )
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '⚙️ **إضافة بند جديد**\nأدخل اسم البند (مثال: *نقاط ولاء*، *عمولة إضافية*، *مكافآت*):',
+        '⚙️ **إضافة بند جديد**\nأدخل اسم البند (مثال: *عمولة إضافية*،'
+        ' *مكافآت*):',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -1394,19 +1751,28 @@ def process_custom_item_title(message):
 
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton('➕ يزيد من رصيد الكاشير (+)', callback_data='set_effect_add'),
-        types.InlineKeyboardButton('➖ ينقص من رصيد الكاشير (-)', callback_data='set_effect_deduct'),
-        types.InlineKeyboardButton('🔙 إلغاء', callback_data='menu_custom_items'),
+        types.InlineKeyboardButton(
+            '➕ يزيد من رصيد الكاشير (+)', callback_data='set_effect_add'
+        ),
+        types.InlineKeyboardButton(
+            '➖ ينقص من رصيد الكاشير (-)', callback_data='set_effect_deduct'
+        ),
+        types.InlineKeyboardButton(
+            '🔙 إلغاء', callback_data='menu_custom_items'
+        ),
     )
     bot.send_message(
         message.chat.id,
-        f'📌 البند المراد إضافته: *{title}*\nحدد تأثير هذا البند على رصيد الكاشير عند تنفيذه:',
+        f'📌 البند المراد إضافته: *{title}*\nحدد تأثير هذا البند على رصيد'
+        ' الكاشير عند تنفيذه:',
         reply_markup=markup,
         parse_mode='Markdown',
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data in ['set_effect_add', 'set_effect_deduct'])
+@bot.callback_query_handler(
+    func=lambda call: call.data in ['set_effect_add', 'set_effect_deduct']
+)
 def save_custom_item_effect(call):
     chat_id = call.message.chat.id
     title = temp_custom_items.get(chat_id)
@@ -1430,11 +1796,14 @@ def save_custom_item_effect(call):
         effect_str = 'زيادة (+)' if effect == 'add' else 'خصم (-)'
         bot.send_message(
             chat_id,
-            f'✅ تم إنشاء البند المخصص: *{title}*\nالتأثير على الكاشير: *{effect_str}*',
+            f'✅ تم إنشاء البند المخصص: *{title}*\nالتأثير على الكاشير:'
+            f' *{effect_str}*',
             parse_mode='Markdown',
         )
     except sqlite3.IntegrityError:
-        bot.send_message(chat_id, '⚠️️ هذا البند موجود مسبقاً!', parse_mode='Markdown')
+        bot.send_message(
+            chat_id, '⚠ هذا البند موجود مسبقاً!', parse_mode='Markdown'
+        )
     finally:
         conn.close()
         temp_custom_items.pop(chat_id, None)
@@ -1442,14 +1811,19 @@ def save_custom_item_effect(call):
     send_main_menu(chat_id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('exec_custom_'))
+@bot.callback_query_handler(
+    func=lambda call: call.data.startswith('exec_custom_')
+)
 def exec_custom_item_prompt(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     item_id = call.data.split('_')[2]
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT id, title, effect_type FROM custom_items WHERE id = ?', (item_id,))
+    cursor.execute(
+        'SELECT id, title, effect_type FROM custom_items WHERE id = ?',
+        (item_id,),
+    )
     item = cursor.fetchone()
     conn.close()
 
@@ -1459,17 +1833,22 @@ def exec_custom_item_prompt(call):
 
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للبنود', callback_data='menu_custom_items')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للبنود', callback_data='menu_custom_items'
+        )
     )
 
     effect_text = 'يزيد الكاشير (+)' if item[2] == 'add' else 'ينقص الكاشير (-)'
     msg = bot.send_message(
         call.message.chat.id,
-        f'📌 تنفيذ عملية: *{item[1]}*\n(تأثير البند: {effect_text})\n\nأدخل المبلغ المراد تسجيله (بالـ SYP):\n*(مثال: 15.000)*',
+        f'📌 تنفيذ عملية: *{item[1]}*\n(تأثير البند: {effect_text})\n\nأدخل'
+        ' المبلغ المراد تسجيله (بالـ SYP):\n*(مثال: 15.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
-    bot.register_next_step_handler(msg, process_custom_trans_amount, item[0], item[1], item[2])
+    bot.register_next_step_handler(
+        msg, process_custom_trans_amount, item[0], item[1], item[2]
+    )
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
     except Exception:
@@ -1483,22 +1862,32 @@ def process_custom_trans_amount(message, item_id, item_title, effect_type):
         amount = float(message.text.replace('.', '').replace(',', ''))
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 إلغاء', callback_data='menu_custom_items')
+            types.InlineKeyboardButton(
+                '🔙 إلغاء', callback_data='menu_custom_items'
+            )
         )
 
         msg = bot.send_message(
             message.chat.id,
-            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 أدخل سبب/وصف أو ملاحظة للعملية:',
+            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 أدخل سبب/وصف أو ملاحظة'
+            ' للعملية:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
         bot.register_next_step_handler(
-            msg, process_custom_trans_save, item_id, item_title, effect_type, amount
+            msg,
+            process_custom_trans_save,
+            item_id,
+            item_title,
+            effect_type,
+            amount,
         )
     except ValueError:
         markup = types.InlineKeyboardMarkup()
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_custom_items')
+            types.InlineKeyboardButton(
+                '🔙 رجوع', callback_data='menu_custom_items'
+            )
         )
         msg = bot.send_message(
             message.chat.id,
@@ -1511,7 +1900,9 @@ def process_custom_trans_amount(message, item_id, item_title, effect_type):
         )
 
 
-def process_custom_trans_save(message, item_id, item_title, effect_type, amount):
+def process_custom_trans_save(
+    message, item_id, item_title, effect_type, amount
+):
     if check_cancel_command(message):
         return
     notes = message.text.strip()
@@ -1521,17 +1912,20 @@ def process_custom_trans_save(message, item_id, item_title, effect_type, amount)
 
     if effect_type == 'add':
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id'
+            ' = 1',
             (amount,),
         )
     else:
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id'
+            ' = 1',
             (amount,),
         )
 
     cursor.execute(
-        'INSERT INTO custom_transactions (item_id, amount, notes) VALUES (?, ?, ?)',
+        'INSERT INTO custom_transactions (item_id, amount, notes) VALUES (?, ?,'
+        ' ?)',
         (item_id, amount, notes),
     )
     conn.commit()
@@ -1553,7 +1947,9 @@ def process_custom_trans_save(message, item_id, item_title, effect_type, amount)
     send_main_menu(message.chat.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == 'del_custom_item_list')
+@bot.callback_query_handler(
+    func=lambda call: call.data == 'del_custom_item_list'
+)
 def del_custom_item_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
     conn = get_db_connection()
@@ -1565,7 +1961,9 @@ def del_custom_item_list(call):
     markup = types.InlineKeyboardMarkup()
     if not items:
         markup.add(
-            types.InlineKeyboardButton('🔙 رجوع للبنود', callback_data='menu_custom_items')
+            types.InlineKeyboardButton(
+                '🔙 رجوع للبنود', callback_data='menu_custom_items'
+            )
         )
         bot.edit_message_text(
             '⚠️ لا يوجد بنود مخصصة مسجلة للحذف.',
@@ -1578,11 +1976,15 @@ def del_custom_item_list(call):
 
     for item in items:
         markup.add(
-            types.InlineKeyboardButton(f'❌ {item[1]}', callback_data=f'delcustom_{item[0]}')
+            types.InlineKeyboardButton(
+                f'❌ {item[1]}', callback_data=f'delcustom_{item[0]}'
+            )
         )
 
     markup.add(
-        types.InlineKeyboardButton('🔙 رجوع للبنود المخصصة', callback_data='menu_custom_items')
+        types.InlineKeyboardButton(
+            '🔙 رجوع للبنود المخصصة', callback_data='menu_custom_items'
+        )
     )
     bot.edit_message_text(
         'اختر البند المخصص المراد حذفه نهائياً:',
@@ -1617,5 +2019,5 @@ def del_custom_item_confirm(call):
     send_main_menu(call.message.chat.id)
 
 
-print('Bot is running with persistent SQLite path configuration...')
+print('Bot is running with full loyalty points and redemption system...')
 bot.infinity_polling()
