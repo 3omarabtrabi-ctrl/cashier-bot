@@ -17,7 +17,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 import telebot
 from telebot import types
 
-TOKEN = '8798815717:AAFK2_Cm6xPhqhJD9Mgnm02b4tiMIM18Ikc'
+TOKEN ='8798815717:AAFK2_Cm6xPhqhJD9Mgnm02b4tiMIM18Ikc'
 bot = telebot.TeleBot(TOKEN)
 
 # تخزين الجلسات النشطة
