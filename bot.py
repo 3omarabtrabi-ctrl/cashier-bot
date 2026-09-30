@@ -1,34 +1,70 @@
+import datetime
 import os
 import sqlite3
+import threading
+import time
+import urllib.request
+
+# --- مكتبات توليد الـ PDF ودعم اللغة العربية ---
+import arabic_reshaper
+from bidi.algorithm import get_display
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 import telebot
 from telebot import types
 
-# ضع توكن البوت الخاص بك هنا
 TOKEN = '8798815717:AAFK2_Cm6xPhqhJD9Mgnm02b4tiMIM18Ikc'
-
 bot = telebot.TeleBot(TOKEN)
 
-# تخزين الجلسات النشطة بعد إدخال كلمة المرور
+# تخزين الجلسات النشطة
 authenticated_chats = set()
-
-# ذاكرة مؤقتة لإنشاء البنود المخصصة
 temp_custom_items = {}
 
-# --- إعداد مسار قاعدة البيانات لحفظ البيانات عند إعادة الانتشار (Redeployment) ---
+# --- إعداد مسار قاعدة البيانات ---
 DATA_DIR = os.getenv('DATA_DIR', '.')
 if DATA_DIR != '.' and not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR, exist_ok=True)
 
 DB_PATH = os.path.join(DATA_DIR, 'syp_store.db')
+FONT_PATH = os.path.join(DATA_DIR, 'Amiri-Regular.ttf')
 
 
 def get_db_connection():
-    """دالة مركزية لفتح الاتصال بقاعدة البيانات باستخدام المسار المعتمد."""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
+# --- إعداد الخط العربي لـ PDF ---
+def setup_arabic_font():
+    """تنزيل خط عربي وإعداده لضمان طباعة الأحرف العربية بشكل صحيح في PDF."""
+    if not os.path.exists(FONT_PATH):
+        try:
+            url = 'https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf'
+            urllib.request.urlretrieve(url, FONT_PATH)
+        except Exception as e:
+            print(f'Warning: Could not download font automatically: {e}')
+
+    if os.path.exists(FONT_PATH):
+        pdfmetrics.registerFont(TTFont('ArabicFont', FONT_PATH))
+        return 'ArabicFont'
+    return 'Helvetica'
+
+
+FONT_NAME = setup_arabic_font()
+
+
+def ar(text):
+    """دالة إعادة تشكيل النصوص العربية لاتجاه اليمين لليسار في PDF."""
+    if text is None:
+        return ''
+    reshaped = arabic_reshaper.reshape(str(text))
+    return get_display(reshaped)
+
+
 def check_cancel_command(message):
-    """دالة عامة لإلغاء أي عملية حالية فور كتابة أي أمر يبدأ بـ / (مثل /start)"""
     if message.text and message.text.startswith('/'):
         bot.clear_step_handler_by_chat_id(message.chat.id)
         if message.text.split()[0] == '/start':
@@ -37,7 +73,7 @@ def check_cancel_command(message):
     return False
 
 
-# --- 1. إعداد قاعدة البيانات الشاملة ---
+# --- 1. إعداد قاعدة البيانات ---
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -51,12 +87,11 @@ def init_db():
         )
     ''')
 
-    # التأكد من وجود عمود نقاط الولاء في حال كانت قاعدة البيانات قديمة
-    cursor.execute("PRAGMA table_info(users)")
+    cursor.execute('PRAGMA table_info(users)')
     columns = [column[1] for column in cursor.fetchall()]
     if 'loyalty_points' not in columns:
         cursor.execute(
-            "ALTER TABLE users ADD COLUMN loyalty_points INTEGER DEFAULT 0"
+            'ALTER TABLE users ADD COLUMN loyalty_points INTEGER DEFAULT 0'
         )
 
     cursor.execute('''
@@ -129,7 +164,309 @@ def init_db():
 init_db()
 
 
-# --- القائمة الرئيسية للأزرار ---
+# --- 2. دالة إنتاج تقرير الـ PDF اليومي الشامل ---
+def generate_daily_pdf():
+    today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+    pdf_filename = f'Daily_Report_{today_str}.pdf'
+
+    doc = SimpleDocTemplate(
+        pdf_filename,
+        pagesize=A4,
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=20,
+        bottomMargin=20,
+    )
+    elements = []
+
+    style_sheet = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'TitleStyle',
+        parent=style_sheet['Heading1'],
+        fontName=FONT_NAME,
+        fontSize=18,
+        alignment=1,  # Center
+        textColor=colors.HexColor('#1A237E'),
+        spaceAfter=12,
+    )
+    sub_title_style = ParagraphStyle(
+        'SubTitleStyle',
+        parent=style_sheet['Normal'],
+        fontName=FONT_NAME,
+        fontSize=11,
+        alignment=1,
+        textColor=colors.HexColor('#424242'),
+        spaceAfter=15,
+    )
+    section_style = ParagraphStyle(
+        'SectionStyle',
+        parent=style_sheet['Heading2'],
+        fontName=FONT_NAME,
+        fontSize=13,
+        alignment=2,  # Right
+        textColor=colors.HexColor('#0D47A1'),
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+    cell_style = ParagraphStyle(
+        'CellStyle',
+        parent=style_sheet['Normal'],
+        fontName=FONT_NAME,
+        fontSize=9,
+        alignment=1,  # Center
+    )
+    cell_header = ParagraphStyle(
+        'CellHeader',
+        parent=style_sheet['Normal'],
+        fontName=FONT_NAME,
+        fontSize=10,
+        alignment=1,
+        textColor=colors.white,
+    )
+
+    elements.append(
+        Paragraph(ar(f'تقرير العمليات اليومي الشامل - {today_str}'), title_style)
+    )
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
+    cashier_bal = cursor.fetchone()[0] or 0.0
+
+    elements.append(
+        Paragraph(
+            ar(f'رصيد الكاشير الحالي في النظام: {cashier_bal:,.0f} SYP'),
+            sub_title_style,
+        )
+    )
+
+    def create_pdf_table(data_list, col_widths):
+        table = Table(data_list, colWidths=col_widths)
+        table.setStyle(
+            TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#283593')),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#BDBDBD')),
+                (
+                    'ROWBACKGROUNDS',
+                    (0, 1),
+                    (-1, -1),
+                    [colors.HexColor('#F5F5F5'), colors.white],
+                ),
+            ])
+        )
+        return table
+
+    # أ. جدول ملخص كافة المستخدمين
+    elements.append(
+        Paragraph(
+            ar('1. كشف السجل العام لكافة المستخدمين (نسخة احتياطية):'),
+            section_style,
+        )
+    )
+    cursor.execute(
+        'SELECT name, balance, debt, loyalty_points FROM users ORDER BY id ASC'
+    )
+    users = cursor.fetchall()
+
+    u_data = [[
+        Paragraph(ar('نقاط الولاء'), cell_header),
+        Paragraph(ar('الديون (SYP)'), cell_header),
+        Paragraph(ar('الرصيد (SYP)'), cell_header),
+        Paragraph(ar('اسم المستخدم'), cell_header),
+    ]]
+    if users:
+        for u in users:
+            u_data.append([
+                Paragraph(ar(str(u[3] or 0)), cell_style),
+                Paragraph(ar(f'{u[2]:,.0f}'), cell_style),
+                Paragraph(ar(f'{u[1]:,.0f}'), cell_style),
+                Paragraph(ar(u[0]), cell_style),
+            ])
+    else:
+        u_data.append([
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('لا يوجد مستخدمين مسجلين'), cell_style),
+        ])
+    elements.append(create_pdf_table(u_data, [100, 130, 130, 180]))
+    elements.append(Spacer(1, 10))
+
+    # ب. عمليات الشحن اليومية
+    elements.append(Paragraph(ar('2. عمليات الشحن اليومية:'), section_style))
+    cursor.execute(
+        '''
+        SELECT u.name, r.amount, r.points_earned, r.date 
+        FROM recharges r JOIN users u ON r.user_id = u.id 
+        WHERE date(r.date) = date('now', 'localtime')
+        ORDER BY r.id DESC
+    '''
+    )
+    recharges = cursor.fetchall()
+
+    r_data = [[
+        Paragraph(ar('الوقت'), cell_header),
+        Paragraph(ar('النقاط المكتسبة'), cell_header),
+        Paragraph(ar('المبلغ (SYP)'), cell_header),
+        Paragraph(ar('المستخدم'), cell_header),
+    ]]
+    if recharges:
+        for r in recharges:
+            r_data.append([
+                Paragraph(ar(r[3].split()[1] if ' ' in r[3] else r[3]), cell_style),
+                Paragraph(ar(str(r[2])), cell_style),
+                Paragraph(ar(f'{r[1]:,.0f}'), cell_style),
+                Paragraph(ar(r[0]), cell_style),
+            ])
+    else:
+        r_data.append([
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('لا توجد عمليات شحن اليوم'), cell_style),
+        ])
+    elements.append(create_pdf_table(r_data, [100, 100, 140, 200]))
+    elements.append(Spacer(1, 10))
+
+    # جـ. عمليات السحب اليومية
+    elements.append(Paragraph(ar('3. عمليات السحب اليومية:'), section_style))
+    cursor.execute(
+        '''
+        SELECT u.name, w.amount, w.fee, w.net_amount, w.date 
+        FROM withdrawals w JOIN users u ON w.user_id = u.id 
+        WHERE date(w.date) = date('now', 'localtime')
+        ORDER BY w.id DESC
+    '''
+    )
+    withdrawals = cursor.fetchall()
+
+    w_data = [[
+        Paragraph(ar('الوقت'), cell_header),
+        Paragraph(ar('الصافي للمستخدم'), cell_header),
+        Paragraph(ar('العمولة (10%)'), cell_header),
+        Paragraph(ar('المبلغ الكلي'), cell_header),
+        Paragraph(ar('المستخدم'), cell_header),
+    ]]
+    if withdrawals:
+        for w in withdrawals:
+            w_data.append([
+                Paragraph(ar(w[4].split()[1] if ' ' in w[4] else w[4]), cell_style),
+                Paragraph(ar(f'{w[3]:,.0f}'), cell_style),
+                Paragraph(ar(f'{w[2]:,.0f}'), cell_style),
+                Paragraph(ar(f'{w[1]:,.0f}'), cell_style),
+                Paragraph(ar(w[0]), cell_style),
+            ])
+    else:
+        w_data.append([
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('لا توجد عمليات سحب اليوم'), cell_style),
+        ])
+    elements.append(create_pdf_table(w_data, [80, 110, 100, 110, 140]))
+    elements.append(Spacer(1, 10))
+
+    # د. المصاريف والأرباح اليومية
+    elements.append(
+        Paragraph(ar('4. المصاريف والأرباح المسجلة اليوم:'), section_style)
+    )
+    cursor.execute(
+        "SELECT amount, reason, date FROM expenses WHERE date(date) = date('now', 'localtime') ORDER BY id DESC"
+    )
+    expenses = cursor.fetchall()
+
+    cursor.execute(
+        "SELECT amount, reason, date FROM profits WHERE date(date) = date('now', 'localtime') ORDER BY id DESC"
+    )
+    profits = cursor.fetchall()
+
+    ep_data = [[
+        Paragraph(ar('الوقت'), cell_header),
+        Paragraph(ar('الوصف / السبب'), cell_header),
+        Paragraph(ar('المبلغ (SYP)'), cell_header),
+        Paragraph(ar('النوع'), cell_header),
+    ]]
+
+    for e in expenses:
+        ep_data.append([
+            Paragraph(ar(e[2].split()[1] if ' ' in e[2] else e[2]), cell_style),
+            Paragraph(ar(e[1]), cell_style),
+            Paragraph(ar(f'-{e[0]:,.0f}'), cell_style),
+            Paragraph(ar('مصروف'), cell_style),
+        ])
+    for p in profits:
+        ep_data.append([
+            Paragraph(ar(p[2].split()[1] if ' ' in p[2] else p[2]), cell_style),
+            Paragraph(ar(p[1]), cell_style),
+            Paragraph(ar(f'+{p[0]:,.0f}'), cell_style),
+            Paragraph(ar('ربح / عمولة'), cell_style),
+        ])
+
+    if len(ep_data) == 1:
+        ep_data.append([
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('لا توجد مصاريف أو أرباح جديدة اليوم'), cell_style),
+            Paragraph(ar('-'), cell_style),
+            Paragraph(ar('-'), cell_style),
+        ])
+
+    elements.append(create_pdf_table(ep_data, [80, 240, 120, 100]))
+
+    conn.close()
+
+    doc.build(elements)
+    return pdf_filename
+
+
+# --- 3. جدولة الإرسال التلقائي نهاية كل يوم (23:59) ---
+def daily_auto_pdf_scheduler():
+    last_sent_date = None
+    while True:
+        now = datetime.datetime.now()
+        current_date = now.strftime('%Y-%m-%d')
+
+        if (
+            now.hour == 23
+            and now.minute == 59
+            and last_sent_date != current_date
+        ):
+            if authenticated_chats:
+                try:
+                    pdf_file = generate_daily_pdf()
+                    for chat_id in list(authenticated_chats):
+                        try:
+                            with open(pdf_file, 'rb') as doc:
+                                bot.send_document(
+                                    chat_id,
+                                    doc,
+                                    caption=(
+                                        '📊 **التقرير اليومي الأوتوماتيكي**\nتم'
+                                        ' إرفاق ملف الـ PDF الشامل لكافة عمليات'
+                                        f' اليوم ({current_date}).'
+                                    ),
+                                    parse_mode='Markdown',
+                                )
+                        except Exception as ex:
+                            print(
+                                f'Failed to send daily report to {chat_id}: {ex}'
+                            )
+                    last_sent_date = current_date
+                except Exception as e:
+                    print(f'Error generating scheduled PDF: {e}')
+            time.sleep(60)
+        time.sleep(30)
+
+
+threading.Thread(target=daily_auto_pdf_scheduler, daemon=True).start()
+
+
+# --- القائمة الرئيسية للمستخدم ---
 def get_main_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -168,6 +505,12 @@ def get_main_markup():
             '🎁 نقاط الولاء', callback_data='menu_loyalty'
         ),
     )
+    # زر استخراج التقرير الفوري بصيغة PDF
+    markup.add(
+        types.InlineKeyboardButton(
+            '📄 تقرير اليوم الشامل (PDF)', callback_data='get_daily_pdf_now'
+        )
+    )
     return markup
 
 
@@ -204,6 +547,28 @@ def send_main_menu(chat_id, message_id=None):
         except Exception:
             pass
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode='Markdown')
+
+
+# --- زر استخراج تقرير اليوم يدوي بأي وقت ---
+@bot.callback_query_handler(func=lambda call: call.data == 'get_daily_pdf_now')
+def send_daily_pdf_manual(call):
+    bot.answer_callback_query(call.id, 'جارٍ إعداد تقرير PDF...')
+    try:
+        pdf_file = generate_daily_pdf()
+        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        with open(pdf_file, 'rb') as doc:
+            bot.send_document(
+                call.message.chat.id,
+                doc,
+                caption=f'📄 **تقرير اليوم الشامل ({today_str})** بصيغة PDF.',
+                parse_mode='Markdown',
+            )
+    except Exception as e:
+        bot.send_message(
+            call.message.chat.id,
+            f'⚠️ حدث خطأ أثناء إنشاء الملف: {e}',
+            parse_mode='Markdown',
+        )
 
 
 # --- نظام الحماية بكلمة المرور وبداية التشغيل ---
@@ -255,7 +620,7 @@ def back_to_main_callback(call):
     send_main_menu(call.message.chat.id, call.message.message_id)
 
 
-# --- 1. إدارة المستخدمين (إضافة / حذف) ---
+# --- إضافة وحذف المستخدمين ---
 @bot.callback_query_handler(func=lambda call: call.data == 'user_add')
 def add_user_step(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -267,8 +632,7 @@ def add_user_step(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        'أدخل اسم المستخدم الجديد (يجب أن يحتوي على @om سواء كانت حروف كبيرة'
-        ' أو صغيرة):\n*(مثال: Ali@om)*',
+        'أدخل اسم المستخدم الجديد (يجب أن يحتوي على @om سواء كانت حروف كبيرة أو صغيرة):\n*(مثال: Ali@om)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -293,8 +657,7 @@ def save_new_user(message):
         )
         msg = bot.send_message(
             message.chat.id,
-            '⚠️ خطأ: يجب أن ينتهي اسم المستخدم بـ @om (سواء كانت حروف كبيرة أو'
-            ' صغيرة).\nأعد إدخال الاسم الصحيح:',
+            '⚠️ خطأ: يجب أن ينتهي اسم المستخدم بـ @om (سواء كانت حروف كبيرة أو صغيرة).\nأعد إدخال الاسم الصحيح:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -390,7 +753,7 @@ def delete_user_confirm(call):
     send_main_menu(call.message.chat.id)
 
 
-# --- 2. شحن رصيد الكاشير ---
+# --- شحن الكاشير والمصاريف والأرباح ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_cashier')
 def cashier_recharge_start(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -402,8 +765,7 @@ def cashier_recharge_start(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💰 شحن رصيد الكاشير\nأدخل المبلغ المراد إضافته إلى رصيد'
-        ' الكاشير:\n*(مثال: 500.000)*',
+        '💰 شحن رصيد الكاشير\nأدخل المبلغ المراد إضافته إلى رصيد الكاشير:\n*(مثال: 500.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -422,8 +784,7 @@ def process_cashier_recharge(message):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE'
-            ' id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
             (amount,),
         )
         conn.commit()
@@ -433,8 +794,7 @@ def process_cashier_recharge(message):
 
         bot.send_message(
             message.chat.id,
-            f'✅ تم شحن الكاشير بنجاح!\nمبلغ الإضافة: {amount:,.0f} SYP\n💼'
-            f' الرصيد الحالي: {new_cashier:,.0f} SYP',
+            f'✅ تم شحن الكاشير بنجاح!\nمبلغ الإضافة: {amount:,.0f} SYP\n💼 الرصيد الحالي: {new_cashier:,.0f} SYP',
             parse_mode='Markdown',
         )
         send_main_menu(message.chat.id)
@@ -454,7 +814,6 @@ def process_cashier_recharge(message):
         bot.register_next_step_handler(msg, process_cashier_recharge)
 
 
-# --- 3. المصاريف ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_expenses')
 def expenses_start(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -466,8 +825,7 @@ def expenses_start(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💸 تسجيل مصروف جديد\nأدخل المبلغ المراد خصمه من الكاشير (بالـ'
-        ' SYP):\n*(مثال: 50.000)*',
+        '💸 تسجيل مصروف جديد\nأدخل المبلغ المراد خصمه من الكاشير (بالـ SYP):\n*(مثال: 50.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -491,8 +849,7 @@ def process_expense_amount(message):
         )
         msg = bot.send_message(
             message.chat.id,
-            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف'
-            ' المصروف (مثال: بونص، أجور...):',
+            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف المصروف (مثال: بونص، أجور...):',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -542,7 +899,6 @@ def process_expense_reason(message, amount):
     send_main_menu(message.chat.id)
 
 
-# --- 4. الأرباح ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_profits')
 def show_profits_menu(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -626,8 +982,7 @@ def process_manual_profit_amount(message):
         )
         msg = bot.send_message(
             message.chat.id,
-            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف'
-            ' الربح اليدوي:',
+            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 الآن أدخل سبب أو وصف الربح اليدوي:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -662,8 +1017,7 @@ def process_manual_profit_reason(message, amount):
         (amount, f'ربح يدوي: {reason}'),
     )
     cursor.execute(
-        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id ='
-        ' 1',
+        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
         (amount,),
     )
 
@@ -683,7 +1037,7 @@ def process_manual_profit_reason(message, amount):
     send_main_menu(message.chat.id)
 
 
-# --- 5. عمليات السحب ---
+# --- عمليات السحب ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_withdraw')
 def withdraw_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -742,8 +1096,7 @@ def withdraw_amount_prompt(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💵 أدخل مبلغ السحب الأساسي (بالـ SYP):\n*(ملاحظة: سيتم خصم عمولة 10%'
-        ' تلقائياً وتضاف للأرباح)\n(مثال: 100.000)*',
+        '💵 أدخل مبلغ السحب الأساسي (بالـ SYP):\n*(ملاحظة: سيتم خصم عمولة 10% تلقائياً وتضاف للأرباح)\n(مثال: 100.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -780,8 +1133,7 @@ def process_withdrawal_calculation(message, user_id):
         name = user[0]
 
         cursor.execute(
-            'INSERT INTO withdrawals (user_id, amount, fee, net_amount)'
-            ' VALUES (?, ?, ?, ?)',
+            'INSERT INTO withdrawals (user_id, amount, fee, net_amount) VALUES (?, ?, ?, ?)',
             (user_id, amount, fee, net_amount),
         )
 
@@ -794,8 +1146,7 @@ def process_withdrawal_calculation(message, user_id):
         )
 
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id'
-            ' = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
             (amount,),
         )
 
@@ -835,7 +1186,7 @@ def process_withdrawal_calculation(message, user_id):
         )
 
 
-# --- 6. زر الشحن وحساب نقاط الولاء ---
+# --- عمليات الشحن (تم إصلاح الخطأ البرمجي هنا) ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_recharge')
 def recharge_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -894,8 +1245,7 @@ def recharge_amount_prompt(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '💵 أدخل مبلغ الشحن (بالـ SYP):\n*(كل 1,000 SYP تعطي نقطة ولاء واحدة'
-        ' تلقائياً)*\n*(مثال: 50.000)*',
+        '💵 أدخل مبلغ الشحن (بالـ SYP):\n*(كل 1,000 SYP تعطي نقطة ولاء واحدة تلقائياً)*\n*(مثال: 50.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -911,25 +1261,22 @@ def process_recharge_save(message, user_id):
         return
     try:
         amount = float(message.text.replace('.', '').replace(',', ''))
-
-        # حساب نقاط الولاء المستحقة (نقطة لكل 1000 SYP)
         earned_points = int(amount // 1000)
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE'
-            ' id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
             (amount,),
         )
         cursor.execute(
-            'UPDATE users SET balance = balance + ?, loyalty_points ='
-            ' loyalty_points + ? WHERE id = ?',
+            'UPDATE users SET balance = balance + ?, loyalty_points = loyalty_points + ? WHERE id = ?',
             (amount, earned_points, user_id),
         )
+        # تصحيح جملة SQL للإدخال بنجاح
         cursor.execute(
-            'INSERT INTO recharges (user_id, amount, points_earned) VALUES (?,',
+            'INSERT INTO recharges (user_id, amount, points_earned) VALUES (?, ?, ?)',
             (user_id, amount, earned_points),
         )
 
@@ -973,9 +1320,16 @@ def process_recharge_save(message, user_id):
             parse_mode='Markdown',
         )
         bot.register_next_step_handler(msg, process_recharge_save, user_id)
+    except Exception as e:
+        bot.send_message(
+            message.chat.id,
+            f'⚠️ حدث خطأ في النظام: {e}',
+            parse_mode='Markdown',
+        )
+        send_main_menu(message.chat.id)
 
 
-# --- 7. قسم نقاط الولاء والاستبدال ---
+# --- نقاط الولاء ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_loyalty')
 def loyalty_menu(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1140,7 +1494,6 @@ def process_loyalty_redemption(call):
         )
         return
 
-    # 1. خصم النقاط وإضافة المبلغ لرصيد المستخدم
     new_points = current_points - required_points
     new_balance = current_balance + reward_amount
 
@@ -1149,16 +1502,13 @@ def process_loyalty_redemption(call):
         (new_points, new_balance, user_id),
     )
 
-    # 2. خصم مبلغ الاستبدال من رصيد الكاشير
     cursor.execute(
-        'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id ='
-        ' 1',
+        'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
         (reward_amount,),
     )
 
     conn.commit()
 
-    # الحصول على رصيد الكاشير المتبقي
     cursor.execute('SELECT cashier_balance FROM settings WHERE id = 1')
     new_cashier = cursor.fetchone()[0]
 
@@ -1180,7 +1530,7 @@ def process_loyalty_redemption(call):
     send_main_menu(call.message.chat.id)
 
 
-# --- 8. زر الدين ---
+# --- الديون وتسديدها ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_debt')
 def debt_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1235,8 +1585,7 @@ def debt_amount_prompt(call):
     markup.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='menu_debt'))
     msg = bot.send_message(
         call.message.chat.id,
-        '💵 أدخل مبلغ الدين (بالـ SYP):\n*(ملاحظة: سيتم تنقيصه من رصيد'
-        ' الكاشير)*',
+        '💵 أدخل مبلغ الدين (بالـ SYP):\n*(ملاحظة: سيتم تنقيصه من رصيد الكاشير)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -1259,8 +1608,7 @@ def process_debt_save(message, user_id):
             'UPDATE users SET debt = debt + ? WHERE id = ?', (amount, user_id)
         )
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE'
-            ' id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
             (amount,),
         )
 
@@ -1275,10 +1623,7 @@ def process_debt_save(message, user_id):
         if user:
             bot.send_message(
                 message.chat.id,
-                f'✅ تم تسجيل الدين بنجاح!\n\n👤 المستخدم: {user[0]}\n💵 مبلغ'
-                f' الدين: {amount:,.0f} SYP\n📊 إجمالي الدين الجديد:'
-                f' {user[1]:,.0f} SYP\n💼 رصيد الكاشير الجديد:'
-                f' {new_cashier:,.0f} SYP',
+                f'✅ تم تسجيل الدين بنجاح!\n\n👤 المستخدم: {user[0]}\n💵 مبلغ الدين: {amount:,.0f} SYP\n📊 إجمالي الدين الجديد: {user[1]:,.0f} SYP\n💼 رصيد الكاشير الجديد: {new_cashier:,.0f} SYP',
                 parse_mode='Markdown',
             )
         send_main_menu(message.chat.id)
@@ -1298,7 +1643,6 @@ def process_debt_save(message, user_id):
         bot.register_next_step_handler(msg, process_debt_save, user_id)
 
 
-# --- 9. زر تسديد الدين ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_repay_debt')
 def repay_debt_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1411,8 +1755,7 @@ def process_full_repay(call):
 
     cursor.execute('UPDATE users SET debt = 0 WHERE id = ?', (user_id,))
     cursor.execute(
-        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id ='
-        ' 1',
+        'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
         (debt,),
     )
 
@@ -1505,8 +1848,7 @@ def process_partial_repay_save(message, user_id):
             )
             msg = bot.send_message(
                 message.chat.id,
-                f'⚠️ المبلغ المدخل ({amount:,.0f}) أكبر من الدين الحالي'
-                f' ({current_debt:,.0f})!\nأدخل مبلغاً صحيحاً:',
+                f'⚠️ المبلغ المدخل ({amount:,.0f}) أكبر من الدين الحالي ({current_debt:,.0f})!\nأدخل مبلغاً صحيحاً:',
                 reply_markup=markup,
                 parse_mode='Markdown',
             )
@@ -1520,8 +1862,7 @@ def process_partial_repay_save(message, user_id):
             'UPDATE users SET debt = debt - ? WHERE id = ?', (amount, user_id)
         )
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE'
-            ' id = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
             (amount,),
         )
 
@@ -1561,7 +1902,7 @@ def process_partial_repay_save(message, user_id):
         )
 
 
-# --- 10. زر كشف حساب مع إظهار نقاط الولاء ---
+# --- كشف حساب ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_statement')
 def statement_users_list(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1666,7 +2007,7 @@ def show_user_statement(call):
         send_main_menu(call.message.chat.id)
 
 
-# --- 11. قسم البنود المخصصة ---
+# --- البنود المخصصة ---
 @bot.callback_query_handler(func=lambda call: call.data == 'menu_custom_items')
 def custom_items_menu(call):
     bot.clear_step_handler_by_chat_id(call.message.chat.id)
@@ -1701,10 +2042,9 @@ def custom_items_menu(call):
     )
 
     text = (
-        '⚙️ **قسم البنود المخصصة**\n'
+        '⚙️️ **قسم البنود المخصصة**\n'
         '━━━━━━━━━━━━━━━\n'
-        'اختر بنداً مخصصاً لتسجيل عملية، أو قم بإنشاء بند جديد وتحديد تأثيره'
-        ' (زيادة أو خصم من الكاشير):'
+        'اختر بنداً مخصصاً لتسجيل عملية، أو قم بإنشاء بند جديد وتحديد تأثيره (زيادة أو خصم من الكاشير):'
     )
     bot.edit_message_text(
         text,
@@ -1726,8 +2066,7 @@ def add_custom_item_start(call):
     )
     msg = bot.send_message(
         call.message.chat.id,
-        '⚙️ **إضافة بند جديد**\nأدخل اسم البند (مثال: *عمولة إضافية*،'
-        ' *مكافآت*):',
+        '⚙️ **إضافة بند جديد**\nأدخل اسم البند (مثال: *عمولة إضافية*، *مكافآت*):',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -1763,8 +2102,7 @@ def process_custom_item_title(message):
     )
     bot.send_message(
         message.chat.id,
-        f'📌 البند المراد إضافته: *{title}*\nحدد تأثير هذا البند على رصيد'
-        ' الكاشير عند تنفيذه:',
+        f'📌 البند المراد إضافته: *{title}*\nحدد تأثير هذا البند على رصيد الكاشير عند تنفيذه:',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -1796,8 +2134,7 @@ def save_custom_item_effect(call):
         effect_str = 'زيادة (+)' if effect == 'add' else 'خصم (-)'
         bot.send_message(
             chat_id,
-            f'✅ تم إنشاء البند المخصص: *{title}*\nالتأثير على الكاشير:'
-            f' *{effect_str}*',
+            f'✅ تم إنشاء البند المخصص: *{title}*\nالتأثير على الكاشير: *{effect_str}*',
             parse_mode='Markdown',
         )
     except sqlite3.IntegrityError:
@@ -1841,8 +2178,7 @@ def exec_custom_item_prompt(call):
     effect_text = 'يزيد الكاشير (+)' if item[2] == 'add' else 'ينقص الكاشير (-)'
     msg = bot.send_message(
         call.message.chat.id,
-        f'📌 تنفيذ عملية: *{item[1]}*\n(تأثير البند: {effect_text})\n\nأدخل'
-        ' المبلغ المراد تسجيله (بالـ SYP):\n*(مثال: 15.000)*',
+        f'📌 تنفيذ عملية: *{item[1]}*\n(تأثير البند: {effect_text})\n\nأدخل المبلغ المراد تسجيله (بالـ SYP):\n*(مثال: 15.000)*',
         reply_markup=markup,
         parse_mode='Markdown',
     )
@@ -1869,8 +2205,7 @@ def process_custom_trans_amount(message, item_id, item_title, effect_type):
 
         msg = bot.send_message(
             message.chat.id,
-            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 أدخل سبب/وصف أو ملاحظة'
-            ' للعملية:',
+            f'💵 المبلغ المدخل: {amount:,.0f} SYP\n\n📝 أدخل سبب/وصف أو ملاحظة للعملية:',
             reply_markup=markup,
             parse_mode='Markdown',
         )
@@ -1912,20 +2247,17 @@ def process_custom_trans_save(
 
     if effect_type == 'add':
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id'
-            ' = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance + ? WHERE id = 1',
             (amount,),
         )
     else:
         cursor.execute(
-            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id'
-            ' = 1',
+            'UPDATE settings SET cashier_balance = cashier_balance - ? WHERE id = 1',
             (amount,),
         )
 
     cursor.execute(
-        'INSERT INTO custom_transactions (item_id, amount, notes) VALUES (?, ?,'
-        ' ?)',
+        'INSERT INTO custom_transactions (item_id, amount, notes) VALUES (?, ?, ?)',
         (item_id, amount, notes),
     )
     conn.commit()
@@ -2019,5 +2351,5 @@ def del_custom_item_confirm(call):
     send_main_menu(call.message.chat.id)
 
 
-print('Bot is running with full loyalty points and redemption system...')
+print('Bot running with fixed recharge logic and daily PDF features...')
 bot.infinity_polling()
